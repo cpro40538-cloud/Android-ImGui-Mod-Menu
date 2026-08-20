@@ -8,96 +8,12 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <cstdio>
-#include <cstdarg>
 #include <cstring>
-#include <cerrno>         // ✅ Thêm cho errno
 #include <android/log.h>
-#include <sys/stat.h>
 
 #define LOG_TAG "THROWIO_AXIOM"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
-// ================================================================
-//  FILE LOG — DUAL OUTPUT (LOGCAT + FILE)
-//  Ưu tiên 1: /data/local/tmp/ — MỌI APP ĐỀU GHI ĐƯỢC, KHÔNG BỊ SELINUX CHẶN
-//  Ưu tiên 2: /data/data/<pkg>/files/ — thử nếu SELinux cho phép
-//  LUÔN GHI VÀO LOGCAT (xem ngay bằng adb logcat)
-// ================================================================
-static FILE* g_logFile = nullptr;
-static char  g_logPath[256] = {0};
-
-static void GetLogPath() {
-    // ════════════════════════════════════════════════════════════
-    //  ƯU TIÊN 1: /data/local/tmp/ — KHÔNG BAO GIỜ BỊ CHẶN
-    // ════════════════════════════════════════════════════════════
-    strcpy(g_logPath, "/data/local/tmp/throwio_axiom_log.txt");
-
-    // ════════════════════════════════════════════════════════════
-    //  ƯU TIÊN 2: thử thư mục riêng của app (nếu SELinux cho phép)
-    // ════════════════════════════════════════════════════════════
-    FILE* f = fopen("/proc/self/cmdline", "r");
-    if (f) {
-        char pkgName[128] = {0};
-        fread(pkgName, 1, sizeof(pkgName) - 1, f);
-        fclose(f);
-        
-        char testPath[256];
-        snprintf(testPath, sizeof(testPath), "/data/data/%s/files/throwio_log.txt", pkgName);
-        
-        // Thử mở thử xem được không
-        FILE* test = fopen(testPath, "a");
-        if (test) {
-            fclose(test);
-            strcpy(g_logPath, testPath);
-        }
-    }
-}
-
-static void FileLog(const char* fmt, ...) {
-    char buf[1024];
-    va_list args;
-    
-    // ── 1. GHI LUÔN VÀO LOGCAT (xem được NGAY BÂY GIỜ bằng adb) ──
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    __android_log_print(ANDROID_LOG_INFO, "THROWIO_FILELOG", "%s", buf);
-
-    // ── 2. GHI VÀO FILE ──
-    if (!g_logFile) {
-        if (g_logPath[0] == '\0') GetLogPath();
-        
-        g_logFile = fopen(g_logPath, "a");
-        
-        // Thử tạo thư mục nếu cần
-        if (!g_logFile) {
-            char dirPath[256];
-            snprintf(dirPath, sizeof(dirPath), "%s", g_logPath);
-            char* lastSlash = strrchr(dirPath, '/');
-            if (lastSlash) {
-                *lastSlash = '\0';
-                mkdir(dirPath, 0777);
-            }
-            g_logFile = fopen(g_logPath, "a");
-        }
-
-        if (g_logFile) {
-            fprintf(g_logFile, "\n=== NEW SESSION (path: %s) ===\n", g_logPath);
-            __android_log_print(ANDROID_LOG_INFO, "THROWIO_FILELOG", 
-                                "[SUCCESS] Log file opened: %s", g_logPath);
-        } else {
-            __android_log_print(ANDROID_LOG_ERROR, "THROWIO_FILELOG", 
-                                "[FAIL] Cannot open log file! errno=%d path=%s", 
-                                errno, g_logPath);
-        }
-    }
-    
-    if (g_logFile) {
-        fprintf(g_logFile, "%s\n", buf);
-        fflush(g_logFile);
-    }
-}
 
 // ================================================================
 //  TOGGLES & BIEN TOAN CUC
@@ -118,6 +34,16 @@ int targetLevel       = 99;
 void* g_BalanceInstance_New = nullptr;
 void* g_BalanceInstance_Old = nullptr;
 void* g_PlayerDataInstance  = nullptr;
+
+// ================================================================
+//  DEBUG STATE — hiện thẳng trên menu, không cần đọc file
+// ================================================================
+static int   g_hookOK   = 0;
+static int   g_hookFAIL = 0;
+static char  g_lastFail[128] = "chua co";
+static void* g_il2cppBase = nullptr;
+static bool  g_threadStarted = false;
+static bool  g_hooksInstalled = false;
 
 static int g_callCount_SoftMoney_New = 0;
 static int g_callCount_SoftMoney_Old = 0;
@@ -180,18 +106,12 @@ fn_void_addmoney old_AddMoney         = nullptr;
 void hk_set_SoftMoney_New(void* self, int64_t v) {
     if (self) g_BalanceInstance_New = self;
     g_callCount_SoftMoney_New++;
-    if (g_callCount_SoftMoney_New <= 5 || g_callCount_SoftMoney_New % 20 == 0)
-        FileLog("[HIT] set_SoftMoney_New called #%d self=%p v=%lld",
-                 g_callCount_SoftMoney_New, self, (long long)v);
     if (bInfiniteSoft) v = 999999999LL;
     if (old_set_SoftMoney_New) old_set_SoftMoney_New(self, v);
 }
 void hk_set_SoftMoney_Old(void* self, int64_t v) {
     if (self) g_BalanceInstance_Old = self;
     g_callCount_SoftMoney_Old++;
-    if (g_callCount_SoftMoney_Old <= 5 || g_callCount_SoftMoney_Old % 20 == 0)
-        FileLog("[HIT] set_SoftMoney_Old called #%d self=%p v=%lld",
-                 g_callCount_SoftMoney_Old, self, (long long)v);
     if (bInfiniteSoft) v = 999999999LL;
     if (old_set_SoftMoney_Old) old_set_SoftMoney_Old(self, v);
 }
@@ -219,8 +139,6 @@ void hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit,
 void hk_AddMoney(void* self, int type, int64_t number, void* source, void* item) {
     if (self) g_PlayerDataInstance = self;
     g_callCount_AddMoney++;
-    FileLog("[HIT] AddMoney called #%d self=%p type=%d number=%lld",
-             g_callCount_AddMoney, self, type, (long long)number);
     if (old_AddMoney) old_AddMoney(self, type, number, source, item);
 }
 
@@ -266,14 +184,6 @@ void ForceApplyToggles() {
 void DrawMenu() {
     ForceApplyToggles();
 
-    static int dbgFrame = 0;
-    if (dbgFrame++ % 120 == 0) {
-        void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
-        FileLog("[TICK] inst=%p pdata=%p callSoftNew=%d callSoftOld=%d callAddMoney=%d",
-                 inst, g_PlayerDataInstance,
-                 g_callCount_SoftMoney_New, g_callCount_SoftMoney_Old, g_callCount_AddMoney);
-    }
-
     static bool bStyleInit = false;
     if (!bStyleInit) {
         ImGuiStyle& st = ImGui::GetStyle();
@@ -285,16 +195,29 @@ void DrawMenu() {
         bStyleInit = true;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(390, 450), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("  THROW.IO  |  AXIOM MOD  ");
 
     void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
+
+    // ── DEBUG PANEL ─────────────────────────────────────────────
+    ImGui::TextColored(ImVec4(1,1,0,1), "-- DEBUG --");
+    ImGui::Text("Thread started: %s", g_threadStarted ? "YES" : "NO");
+    ImGui::Text("il2cpp base: %p", g_il2cppBase);
+    ImGui::TextColored(g_hooksInstalled ? ImVec4(0,1,0,1) : ImVec4(1,0.5f,0,1),
+                       "Hooks installed: %s", g_hooksInstalled ? "YES" : "WAITING...");
+    ImGui::TextColored(g_hookFAIL == 0 && g_hooksInstalled ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
+                       "Hook OK=%d FAIL=%d", g_hookOK, g_hookFAIL);
+    if (g_hookFAIL > 0)
+        ImGui::TextColored(ImVec4(1,0.5f,0,1), "LastFail: %s", g_lastFail);
+    ImGui::Text("CallCount: SoftNew=%d SoftOld=%d AddMoney=%d",
+                g_callCount_SoftMoney_New, g_callCount_SoftMoney_Old, g_callCount_AddMoney);
     ImGui::TextColored(
         inst ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
-        inst ? "Instance: OK" : "Instance: CHUA CO (vao tran choi truoc)"
+        inst ? "Instance: OK" : "Instance: CHUA CO"
     );
-    ImGui::Text("SoftNew=%d SoftOld=%d AddMoney=%d",
-                g_callCount_SoftMoney_New, g_callCount_SoftMoney_Old, g_callCount_AddMoney);
+    ImGui::Separator();
+    // ─────────────────────────────────────────────────────────────
 
     if (ImGui::BeginTabBar("MainTabs")) {
         if (ImGui::BeginTabItem(" TIEN TE ")) {
@@ -322,22 +245,28 @@ void DrawMenu() {
 // ================================================================
 void* thread(void*) {
     initModMenu((void*)DrawMenu);
-    FileLog("=== INIT START ===");
+    g_threadStarted = true;
 
     do { sleep(1); } while (getAbsoluteAddress("libil2cpp.so", 0) == 0);
-    FileLog("[+] libil2cpp detected, base=%p", (void*)getAbsoluteAddress("libil2cpp.so", 0));
+
+    g_il2cppBase = (void*)getAbsoluteAddress("libil2cpp.so", 0);
+    LOGI("[+] libil2cpp base=%p", g_il2cppBase);
     sleep(3);
 
     #define HOOK(off, hk, orig) \
         do { \
             void* addr = (void*)getAbsoluteAddress("libil2cpp.so", off); \
             if (!addr) { \
-                FileLog("[FAIL] addr NULL @ 0x%lX (%s)", (unsigned long)off, #hk); \
+                g_hookFAIL++; \
+                snprintf(g_lastFail, sizeof(g_lastFail), "%s addrNULL@0x%lX", #hk, (unsigned long)off); \
                 break; \
             } \
             auto ret = DobbyHook(addr, (void*)hk, (void**)&orig); \
-            if (ret == 0) FileLog("[OK] %s @ 0x%lX -> %p", #hk, (unsigned long)off, addr); \
-            else FileLog("[FAIL] DobbyHook ret=%d %s @ 0x%lX", (int)ret, #hk, (unsigned long)off); \
+            if (ret == 0) { g_hookOK++; } \
+            else { \
+                g_hookFAIL++; \
+                snprintf(g_lastFail, sizeof(g_lastFail), "%s DobbyFail ret=%d", #hk, (int)ret); \
+            } \
         } while (0)
 
     HOOK(Offsets::set_SoftMoney_New,  hk_set_SoftMoney_New,  old_set_SoftMoney_New);
@@ -360,8 +289,8 @@ void* thread(void*) {
 
     #undef HOOK
 
-    FileLog("[+] ALL HOOKS DONE");
-    LOGI("[+] ALL HOOKS DONE!");
+    g_hooksInstalled = true;
+    LOGI("[+] ALL HOOKS DONE! OK=%d FAIL=%d", g_hookOK, g_hookFAIL);
     pthread_exit(0);
 }
 
