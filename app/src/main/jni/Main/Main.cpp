@@ -36,7 +36,7 @@ void* g_BalanceInstance_Old = nullptr;
 void* g_PlayerDataInstance  = nullptr;
 
 // ================================================================
-//  DEBUG STATE — hiện thẳng trên menu, không cần đọc file
+//  DEBUG STATE
 // ================================================================
 static int   g_hookOK   = 0;
 static int   g_hookFAIL = 0;
@@ -49,8 +49,33 @@ static int g_callCount_SoftMoney_New = 0;
 static int g_callCount_SoftMoney_Old = 0;
 static int g_callCount_AddMoney      = 0;
 
+// [NEW] Lưu bytes đọc được để hiện trên menu — khỏi cần logcat
+static char g_bytesDump[8][96];
+static int  g_bytesDumpCount = 0;
+
 // ================================================================
-//  OFFSETS
+//  BYTE SANITY CHECK
+//  Đọc 8 byte đầu tại địa chỉ patch — xem có phải code ARM64 thật không
+//  Prologue chuẩn thường bắt đầu: FD 7B ** A9 (stp x29,x30,[sp,#-N]!)
+//                              hoặc FF 43 ** D1 (sub sp, sp, #N)
+// ================================================================
+static void DumpBytesAtAddr(const char* label, void* addr) {
+    if (g_bytesDumpCount >= 8) return;
+
+    if (!addr) {
+        snprintf(g_bytesDump[g_bytesDumpCount++], 96, "%s: addr=NULL", label);
+        return;
+    }
+    unsigned char* p = (unsigned char*)addr;
+    snprintf(g_bytesDump[g_bytesDumpCount++], 96,
+             "%s: %02X %02X %02X %02X %02X %02X %02X %02X",
+             label, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+    LOGI("[BYTES] %s @ %p: %02X %02X %02X %02X %02X %02X %02X %02X",
+         label, addr, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+}
+
+// ================================================================
+//  OFFSETS — verified khớp 2 lần dump độc lập
 // ================================================================
 namespace Offsets {
     constexpr uintptr_t set_SoftMoney_New  = 0x1315B48;
@@ -195,27 +220,30 @@ void DrawMenu() {
         bStyleInit = true;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(420, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(460, 620), ImGuiCond_FirstUseEver);
     ImGui::Begin("  THROW.IO  |  AXIOM MOD  ");
 
     void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
 
     // ── DEBUG PANEL ─────────────────────────────────────────────
     ImGui::TextColored(ImVec4(1,1,0,1), "-- DEBUG --");
-    ImGui::Text("Thread started: %s", g_threadStarted ? "YES" : "NO");
     ImGui::Text("il2cpp base: %p", g_il2cppBase);
     ImGui::TextColored(g_hooksInstalled ? ImVec4(0,1,0,1) : ImVec4(1,0.5f,0,1),
-                       "Hooks installed: %s", g_hooksInstalled ? "YES" : "WAITING...");
-    ImGui::TextColored(g_hookFAIL == 0 && g_hooksInstalled ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
-                       "Hook OK=%d FAIL=%d", g_hookOK, g_hookFAIL);
-    if (g_hookFAIL > 0)
-        ImGui::TextColored(ImVec4(1,0.5f,0,1), "LastFail: %s", g_lastFail);
+                       "Hooks installed: %s", g_hooksInstalled ? "YES" : "WAITING");
+    ImGui::Text("Hook OK=%d FAIL=%d", g_hookOK, g_hookFAIL);
     ImGui::Text("CallCount: SoftNew=%d SoftOld=%d AddMoney=%d",
                 g_callCount_SoftMoney_New, g_callCount_SoftMoney_Old, g_callCount_AddMoney);
     ImGui::TextColored(
         inst ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
         inst ? "Instance: OK" : "Instance: CHUA CO"
     );
+    ImGui::Separator();
+
+    // [NEW] Hiện bytes đọc được — copy gửi tao cái này
+    ImGui::TextColored(ImVec4(0,0.9f,1,1), "-- RAW BYTES @ PATCH ADDR --");
+    for (int i = 0; i < g_bytesDumpCount; i++) {
+        ImGui::TextWrapped("%s", g_bytesDump[i]);
+    }
     ImGui::Separator();
     // ─────────────────────────────────────────────────────────────
 
@@ -253,6 +281,7 @@ void* thread(void*) {
     LOGI("[+] libil2cpp base=%p", g_il2cppBase);
     sleep(3);
 
+    // [FIX] Chỉ dump bytes cho 3 hook quan trọng nhất — tránh tràn buffer
     #define HOOK(off, hk, orig) \
         do { \
             void* addr = (void*)getAbsoluteAddress("libil2cpp.so", off); \
@@ -262,12 +291,18 @@ void* thread(void*) {
                 break; \
             } \
             auto ret = DobbyHook(addr, (void*)hk, (void**)&orig); \
-            if (ret == 0) { g_hookOK++; } \
+            if (ret == 0) g_hookOK++; \
             else { \
                 g_hookFAIL++; \
                 snprintf(g_lastFail, sizeof(g_lastFail), "%s DobbyFail ret=%d", #hk, (int)ret); \
             } \
         } while (0)
+
+    // [NEW] Dump bytes TRƯỚC khi hook — chỉ 3 cái quan trọng nhất
+    DumpBytesAtAddr("AddMoney", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::AddMoney));
+    DumpBytesAtAddr("SoftMoney_New", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_SoftMoney_New));
+    DumpBytesAtAddr("SoftMoney_Old", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_SoftMoney_Old));
+    DumpBytesAtAddr("SetUndead", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_undead));
 
     HOOK(Offsets::set_SoftMoney_New,  hk_set_SoftMoney_New,  old_set_SoftMoney_New);
     HOOK(Offsets::set_HardMoney_New,  hk_set_HardMoney_New,  old_set_HardMoney_New);
