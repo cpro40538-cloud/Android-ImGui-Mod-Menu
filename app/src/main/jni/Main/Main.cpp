@@ -48,16 +48,13 @@ static bool  g_hooksInstalled = false;
 static int g_callCount_SoftMoney_New = 0;
 static int g_callCount_SoftMoney_Old = 0;
 static int g_callCount_AddMoney      = 0;
+static int g_callCount_SpeedFactor   = 0;   // [NEW] hàm chạy liên tục mỗi frame
 
-// [NEW] Lưu bytes đọc được để hiện trên menu — khỏi cần logcat
 static char g_bytesDump[8][96];
 static int  g_bytesDumpCount = 0;
 
 // ================================================================
 //  BYTE SANITY CHECK
-//  Đọc 8 byte đầu tại địa chỉ patch — xem có phải code ARM64 thật không
-//  Prologue chuẩn thường bắt đầu: FD 7B ** A9 (stp x29,x30,[sp,#-N]!)
-//                              hoặc FF 43 ** D1 (sub sp, sp, #N)
 // ================================================================
 static void DumpBytesAtAddr(const char* label, void* addr) {
     if (g_bytesDumpCount >= 8) return;
@@ -75,7 +72,7 @@ static void DumpBytesAtAddr(const char* label, void* addr) {
 }
 
 // ================================================================
-//  OFFSETS — verified khớp 2 lần dump độc lập
+//  OFFSETS
 // ================================================================
 namespace Offsets {
     constexpr uintptr_t set_SoftMoney_New  = 0x1315B48;
@@ -152,7 +149,13 @@ void hk_set_NoAds_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = se
 void hk_set_VipActive_New(void* self, bool v) { if (self) g_BalanceInstance_New = self; if (bVipActive) v = true; if (old_set_VipActive_New) old_set_VipActive_New(self, v); }
 void hk_set_VipActive_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = self; if (bVipActive) v = true; if (old_set_VipActive_Old) old_set_VipActive_Old(self, v); }
 void hk_set_undead(void* self, bool v) { if (bGodMode) v = true; if (old_set_undead) old_set_undead(self, v); }
-void hk_SetMoveSpeedFactor(void* self, float factor) { if (bSpeedHack) factor *= speedFactor; if (old_SetMoveSpeedFactor) old_SetMoveSpeedFactor(self, factor); }
+
+// [FIX] Thêm counter — hàm này PHẢI chạy liên tục khi di chuyển
+void hk_SetMoveSpeedFactor(void* self, float factor) {
+    g_callCount_SpeedFactor++;
+    if (bSpeedHack) factor *= speedFactor;
+    if (old_SetMoveSpeedFactor) old_SetMoveSpeedFactor(self, factor);
+}
 
 void hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit,
                      bool isPoison, bool isCandyPoison, int src) {
@@ -220,7 +223,7 @@ void DrawMenu() {
         bStyleInit = true;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(460, 620), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(460, 650), ImGuiCond_FirstUseEver);
     ImGui::Begin("  THROW.IO  |  AXIOM MOD  ");
 
     void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
@@ -231,6 +234,17 @@ void DrawMenu() {
     ImGui::TextColored(g_hooksInstalled ? ImVec4(0,1,0,1) : ImVec4(1,0.5f,0,1),
                        "Hooks installed: %s", g_hooksInstalled ? "YES" : "WAITING");
     ImGui::Text("Hook OK=%d FAIL=%d", g_hookOK, g_hookFAIL);
+
+    // [NEW] Highlight riêng SpeedFactor — đây là phép test quyết định
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(1,0.8f,0,1), ">> TEST QUYET DINH <<");
+    ImGui::TextColored(
+        g_callCount_SpeedFactor > 0 ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
+        "SpeedFactor calls: %d  (di chuyen nhan vat de test)",
+        g_callCount_SpeedFactor
+    );
+    ImGui::Separator();
+
     ImGui::Text("CallCount: SoftNew=%d SoftOld=%d AddMoney=%d",
                 g_callCount_SoftMoney_New, g_callCount_SoftMoney_Old, g_callCount_AddMoney);
     ImGui::TextColored(
@@ -239,7 +253,6 @@ void DrawMenu() {
     );
     ImGui::Separator();
 
-    // [NEW] Hiện bytes đọc được — copy gửi tao cái này
     ImGui::TextColored(ImVec4(0,0.9f,1,1), "-- RAW BYTES @ PATCH ADDR --");
     for (int i = 0; i < g_bytesDumpCount; i++) {
         ImGui::TextWrapped("%s", g_bytesDump[i]);
@@ -281,7 +294,6 @@ void* thread(void*) {
     LOGI("[+] libil2cpp base=%p", g_il2cppBase);
     sleep(3);
 
-    // [FIX] Chỉ dump bytes cho 3 hook quan trọng nhất — tránh tràn buffer
     #define HOOK(off, hk, orig) \
         do { \
             void* addr = (void*)getAbsoluteAddress("libil2cpp.so", off); \
@@ -298,7 +310,6 @@ void* thread(void*) {
             } \
         } while (0)
 
-    // [NEW] Dump bytes TRƯỚC khi hook — chỉ 3 cái quan trọng nhất
     DumpBytesAtAddr("AddMoney", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::AddMoney));
     DumpBytesAtAddr("SoftMoney_New", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_SoftMoney_New));
     DumpBytesAtAddr("SoftMoney_Old", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_SoftMoney_Old));
