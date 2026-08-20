@@ -14,7 +14,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // ================================================================
-//  TOGGLES & BIẾN TOÀN CỤC (Giữ nguyên của bản mới)
+//  TOGGLES & BIEN TOAN CUC
 // ================================================================
 bool bInfiniteSoft    = false;
 bool bInfiniteHard    = false;
@@ -29,8 +29,12 @@ bool bBypassAntiCheat = true;
 float speedFactor     = 3.0f;
 int targetLevel       = 99;
 
+// FIX: Capture instance de goi lai chu dong
+void* g_BalanceInstance_New = nullptr;
+void* g_BalanceInstance_Old = nullptr;
+
 // ================================================================
-//  OFFSETS (Giữ nguyên của bản mới)
+//  OFFSETS
 // ================================================================
 namespace Offsets {
     constexpr uintptr_t set_SoftMoney_New  = 0x1315B48;
@@ -78,21 +82,29 @@ fn_void_float  old_SetMoveSpeedFactor = nullptr;
 fn_bool_damage old_ApplyDamage        = nullptr;
 
 // ================================================================
-//  HOOK IMPLEMENTATIONS (Logic hack giữ nguyên)
+//  HOOK IMPLEMENTATIONS - THEM CAPTURE INSTANCE
 // ================================================================
-void hk_set_SoftMoney_New(void* self, int64_t v) { if (bInfiniteSoft) v = 999999999LL; if (old_set_SoftMoney_New) old_set_SoftMoney_New(self, v); }
-void hk_set_SoftMoney_Old(void* self, int64_t v) { if (bInfiniteSoft) v = 999999999LL; if (old_set_SoftMoney_Old) old_set_SoftMoney_Old(self, v); }
-void hk_set_HardMoney_New(void* self, int64_t v) { if (bInfiniteHard) v = 999999999LL; if (old_set_HardMoney_New) old_set_HardMoney_New(self, v); }
-void hk_set_HardMoney_Old(void* self, int64_t v) { if (bInfiniteHard) v = 999999999LL; if (old_set_HardMoney_Old) old_set_HardMoney_Old(self, v); }
-void hk_set_Level_New(void* self, int v) { if (bAutoMaxLevel) v = targetLevel; if (old_set_Level_New) old_set_Level_New(self, v); }
-void hk_set_Level_Old(void* self, int v) { if (bAutoMaxLevel) v = targetLevel; if (old_set_Level_Old) old_set_Level_Old(self, v); }
-void hk_set_Exp_New(void* self, int v) { if (bAutoMaxLevel) v = 0x7FFFFFFF; if (old_set_Exp_New) old_set_Exp_New(self, v); }
-void hk_set_Energy_New(void* self, int64_t v) { if (bInfiniteEnergy) v = 9999LL; if (old_set_Energy_New) old_set_Energy_New(self, v); }
-void hk_set_Energy_Old(void* self, int64_t v) { if (bInfiniteEnergy) v = 9999LL; if (old_set_Energy_Old) old_set_Energy_Old(self, v); }
-void hk_set_NoAds_New(void* self, bool v) { if (bNoAds) v = true; if (old_set_NoAds_New) old_set_NoAds_New(self, v); }
-void hk_set_NoAds_Old(void* self, bool v) { if (bNoAds) v = true; if (old_set_NoAds_Old) old_set_NoAds_Old(self, v); }
-void hk_set_VipActive_New(void* self, bool v) { if (bVipActive) v = true; if (old_set_VipActive_New) old_set_VipActive_New(self, v); }
-void hk_set_VipActive_Old(void* self, bool v) { if (bVipActive) v = true; if (old_set_VipActive_Old) old_set_VipActive_Old(self, v); }
+void hk_set_SoftMoney_New(void* self, int64_t v) {
+    if (self) g_BalanceInstance_New = self; // CAPTURE
+    if (bInfiniteSoft) v = 999999999LL;
+    if (old_set_SoftMoney_New) old_set_SoftMoney_New(self, v);
+}
+void hk_set_SoftMoney_Old(void* self, int64_t v) {
+    if (self) g_BalanceInstance_Old = self; // CAPTURE
+    if (bInfiniteSoft) v = 999999999LL;
+    if (old_set_SoftMoney_Old) old_set_SoftMoney_Old(self, v);
+}
+void hk_set_HardMoney_New(void* self, int64_t v) { if (self) g_BalanceInstance_New = self; if (bInfiniteHard) v = 999999999LL; if (old_set_HardMoney_New) old_set_HardMoney_New(self, v); }
+void hk_set_HardMoney_Old(void* self, int64_t v) { if (self) g_BalanceInstance_Old = self; if (bInfiniteHard) v = 999999999LL; if (old_set_HardMoney_Old) old_set_HardMoney_Old(self, v); }
+void hk_set_Level_New(void* self, int v) { if (self) g_BalanceInstance_New = self; if (bAutoMaxLevel) v = targetLevel; if (old_set_Level_New) old_set_Level_New(self, v); }
+void hk_set_Level_Old(void* self, int v) { if (self) g_BalanceInstance_Old = self; if (bAutoMaxLevel) v = targetLevel; if (old_set_Level_Old) old_set_Level_Old(self, v); }
+void hk_set_Exp_New(void* self, int v) { if (self) g_BalanceInstance_New = self; if (bAutoMaxLevel) v = 0x7FFFFFFF; if (old_set_Exp_New) old_set_Exp_New(self, v); }
+void hk_set_Energy_New(void* self, int64_t v) { if (self) g_BalanceInstance_New = self; if (bInfiniteEnergy) v = 9999LL; if (old_set_Energy_New) old_set_Energy_New(self, v); }
+void hk_set_Energy_Old(void* self, int64_t v) { if (self) g_BalanceInstance_Old = self; if (bInfiniteEnergy) v = 9999LL; if (old_set_Energy_Old) old_set_Energy_Old(self, v); }
+void hk_set_NoAds_New(void* self, bool v) { if (self) g_BalanceInstance_New = self; if (bNoAds) v = true; if (old_set_NoAds_New) old_set_NoAds_New(self, v); }
+void hk_set_NoAds_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = self; if (bNoAds) v = true; if (old_set_NoAds_Old) old_set_NoAds_Old(self, v); }
+void hk_set_VipActive_New(void* self, bool v) { if (self) g_BalanceInstance_New = self; if (bVipActive) v = true; if (old_set_VipActive_New) old_set_VipActive_New(self, v); }
+void hk_set_VipActive_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = self; if (bVipActive) v = true; if (old_set_VipActive_Old) old_set_VipActive_Old(self, v); }
 void hk_set_undead(void* self, bool v) { if (bGodMode) v = true; if (old_set_undead) old_set_undead(self, v); }
 void hk_SetMoveSpeedFactor(void* self, float factor) { if (bSpeedHack) factor *= speedFactor; if (old_SetMoveSpeedFactor) old_SetMoveSpeedFactor(self, factor); }
 bool hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit, bool isPoison, int src) {
@@ -101,9 +113,49 @@ bool hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit, bool isPoi
 }
 
 // ================================================================
-//  VẼ GIAO DIỆN (IMGUI MENU - Giữ nguyên thiết kế Axiom)
+//  FORCE APPLY - Chu dong goi lai setter voi instance da capture
+//  Goi ham nay MOI FRAME de cac toggle co tac dung ngay lap tuc
+// ================================================================
+void ForceApplyToggles() {
+    void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
+    if (!inst) return;
+
+    bool useNew = (g_BalanceInstance_New != nullptr);
+
+    if (bInfiniteSoft) {
+        if (useNew && old_set_SoftMoney_New) old_set_SoftMoney_New(inst, 999999999LL);
+        else if (old_set_SoftMoney_Old) old_set_SoftMoney_Old(inst, 999999999LL);
+    }
+    if (bInfiniteHard) {
+        if (useNew && old_set_HardMoney_New) old_set_HardMoney_New(inst, 999999999LL);
+        else if (old_set_HardMoney_Old) old_set_HardMoney_Old(inst, 999999999LL);
+    }
+    if (bInfiniteEnergy) {
+        if (useNew && old_set_Energy_New) old_set_Energy_New(inst, 9999LL);
+        else if (old_set_Energy_Old) old_set_Energy_Old(inst, 9999LL);
+    }
+    if (bAutoMaxLevel) {
+        if (useNew && old_set_Level_New) old_set_Level_New(inst, targetLevel);
+        else if (old_set_Level_Old) old_set_Level_Old(inst, targetLevel);
+        if (useNew && old_set_Exp_New) old_set_Exp_New(inst, 0x7FFFFFFF);
+    }
+    if (bNoAds) {
+        if (useNew && old_set_NoAds_New) old_set_NoAds_New(inst, true);
+        else if (old_set_NoAds_Old) old_set_NoAds_Old(inst, true);
+    }
+    if (bVipActive) {
+        if (useNew && old_set_VipActive_New) old_set_VipActive_New(inst, true);
+        else if (old_set_VipActive_Old) old_set_VipActive_Old(inst, true);
+    }
+}
+
+// ================================================================
+//  VE GIAO DIEN
 // ================================================================
 void DrawMenu() {
+    // FIX: Goi force apply moi frame de toggle co tac dung ngay
+    ForceApplyToggles();
+
     static bool bStyleInit = false;
     if (!bStyleInit) {
         ImGuiStyle& st = ImGui::GetStyle();
@@ -117,6 +169,12 @@ void DrawMenu() {
 
     ImGui::SetNextWindowSize(ImVec2(390, 450), ImGuiCond_FirstUseEver);
     ImGui::Begin("  THROW.IO  |  AXIOM MOD  ");
+
+    // Debug status
+    ImGui::TextColored(
+        (g_BalanceInstance_New || g_BalanceInstance_Old) ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
+        (g_BalanceInstance_New || g_BalanceInstance_Old) ? "Instance: OK" : "Instance: CHUA CO (vao tran choi truoc)"
+    );
 
     if (ImGui::BeginTabBar("MainTabs")) {
         if (ImGui::BeginTabItem(" TIEN TE ")) {
@@ -140,21 +198,18 @@ void DrawMenu() {
 }
 
 // ================================================================
-//  LUỒNG CHÍNH (Dùng phương pháp chống văng của bản AWP cũ)
+//  LUONG CHINH
 // ================================================================
 void* thread(void*) {
-    // 1. Khởi tạo Menu
     initModMenu((void*)DrawMenu);
 
-    // 2. Chờ thư viện load (Dùng hàm getAbsoluteAddress an toàn tuyệt đối)
     do {
         sleep(1);
     } while (getAbsoluteAddress("libil2cpp.so", 0) == 0);
-    
+
     LOGI("[+] libil2cpp detected, waiting for unpack...");
     sleep(3);
 
-    // 3. Tiến hành Hook (Cũng dùng getAbsoluteAddress để bypass Android 11+)
     #define HOOK(off, hk, orig) \
         DobbyHook((void*)getAbsoluteAddress("libil2cpp.so", off), (void*)hk, (void**)&orig)
 
@@ -176,14 +231,11 @@ void* thread(void*) {
     HOOK(Offsets::ApplyDamage,        hk_ApplyDamage,        old_ApplyDamage);
 
     #undef HOOK
-    
+
     LOGI("[+] ALL HOOKS DONE!");
     pthread_exit(0);
 }
 
-// ================================================================
-//  KHỞI TẠO JNI & THƯ VIỆN (Giữ nguyên loadJNI theo form chuẩn)
-// ================================================================
 extern "C" {
     JavaVM* jvm = nullptr;
     JNIEnv* env = nullptr;
