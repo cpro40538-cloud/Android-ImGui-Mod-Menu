@@ -48,10 +48,24 @@ static bool  g_hooksInstalled = false;
 static int g_callCount_SoftMoney_New = 0;
 static int g_callCount_SoftMoney_Old = 0;
 static int g_callCount_AddMoney      = 0;
-static int g_callCount_SpeedFactor   = 0;   // [NEW] hàm chạy liên tục mỗi frame
+static int g_callCount_SpeedFactor   = 0;
 
 static char g_bytesDump[8][96];
 static int  g_bytesDumpCount = 0;
+
+// ════════════════════════════════════════════════════════════════
+//  [NEW] TEST QUYẾT ĐỊNH — DUMP BYTES TRƯỚC vs SAU KHI HOOK
+// ════════════════════════════════════════════════════════════════
+static char g_bytesBefore[4][96];
+static char g_bytesAfter[4][96];
+static int  g_bytesIdx = 0;
+
+static void DumpBytes(char out[96], void* addr) {
+    if (!addr) { snprintf(out, 96, "addr=NULL"); return; }
+    unsigned char* p = (unsigned char*)addr;
+    snprintf(out, 96, "%02X %02X %02X %02X %02X %02X %02X %02X",
+             p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7]);
+}
 
 // ================================================================
 //  BYTE SANITY CHECK
@@ -150,7 +164,6 @@ void hk_set_VipActive_New(void* self, bool v) { if (self) g_BalanceInstance_New 
 void hk_set_VipActive_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = self; if (bVipActive) v = true; if (old_set_VipActive_Old) old_set_VipActive_Old(self, v); }
 void hk_set_undead(void* self, bool v) { if (bGodMode) v = true; if (old_set_undead) old_set_undead(self, v); }
 
-// [FIX] Thêm counter — hàm này PHẢI chạy liên tục khi di chuyển
 void hk_SetMoveSpeedFactor(void* self, float factor) {
     g_callCount_SpeedFactor++;
     if (bSpeedHack) factor *= speedFactor;
@@ -235,7 +248,6 @@ void DrawMenu() {
                        "Hooks installed: %s", g_hooksInstalled ? "YES" : "WAITING");
     ImGui::Text("Hook OK=%d FAIL=%d", g_hookOK, g_hookFAIL);
 
-    // [NEW] Highlight riêng SpeedFactor — đây là phép test quyết định
     ImGui::Separator();
     ImGui::TextColored(ImVec4(1,0.8f,0,1), ">> TEST QUYET DINH <<");
     ImGui::TextColored(
@@ -243,6 +255,14 @@ void DrawMenu() {
         "SpeedFactor calls: %d  (di chuyen nhan vat de test)",
         g_callCount_SpeedFactor
     );
+
+    // ════════════════════════════════════════════════════════════
+    //  [NEW] HIỂN THỊ BYTES TRƯỚC vs SAU KHI HOOK
+    // ════════════════════════════════════════════════════════════
+    ImGui::TextColored(ImVec4(1,1,0,1), "-- BEFORE vs AFTER HOOK --");
+    ImGui::Text("SpeedFactor BEFORE: %s", g_bytesBefore[0]);
+    ImGui::Text("SpeedFactor AFTER:  %s", g_bytesAfter[0]);
+
     ImGui::Separator();
 
     ImGui::Text("CallCount: SoftNew=%d SoftOld=%d AddMoney=%d",
@@ -329,7 +349,24 @@ void* thread(void*) {
     HOOK(Offsets::set_NoAds_Old,      hk_set_NoAds_Old,      old_set_NoAds_Old);
     HOOK(Offsets::set_VipActive_Old,  hk_set_VipActive_Old,  old_set_VipActive_Old);
     HOOK(Offsets::set_undead,         hk_set_undead,         old_set_undead);
-    HOOK(Offsets::SetMoveSpeedFactor, hk_SetMoveSpeedFactor, old_SetMoveSpeedFactor);
+
+    // ════════════════════════════════════════════════════════════
+    //  [NEW] HOOK SetMoveSpeedFactor RIÊNG — DUMP TRƯỚC & SAU
+    // ════════════════════════════════════════════════════════════
+    {
+        void* addr = (void*)getAbsoluteAddress("libil2cpp.so", Offsets::SetMoveSpeedFactor);
+        DumpBytes(g_bytesBefore[0], addr);
+
+        auto ret = DobbyHook(addr, (void*)hk_SetMoveSpeedFactor, (void**)&old_SetMoveSpeedFactor);
+        if (ret == 0) g_hookOK++;
+        else {
+            g_hookFAIL++;
+            snprintf(g_lastFail, sizeof(g_lastFail), "SetMoveSpeedFactor DobbyFail ret=%d", (int)ret);
+        }
+
+        DumpBytes(g_bytesAfter[0], addr);   // đọc lại NGAY sau patch
+    }
+
     HOOK(Offsets::ApplyDamage,        hk_ApplyDamage,        old_ApplyDamage);
     HOOK(Offsets::AddMoney,           hk_AddMoney,           old_AddMoney);
 
