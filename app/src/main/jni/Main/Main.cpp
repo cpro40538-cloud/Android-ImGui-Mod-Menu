@@ -10,45 +10,67 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <cerrno>         // ✅ Thêm cho errno
 #include <android/log.h>
-#include <sys/stat.h>   // ✅ Thêm cho mkdir()
+#include <sys/stat.h>
 
 #define LOG_TAG "THROWIO_AXIOM"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // ================================================================
-//  FILE LOG — GHI VÀO THƯ MỤC RIÊNG CỦA APP → KHÔNG CẦN PERMISSION
-//  Tự đọc package name từ /proc/self/cmdline
+//  FILE LOG — DUAL OUTPUT (LOGCAT + FILE)
+//  Ưu tiên 1: /data/local/tmp/ — MỌI APP ĐỀU GHI ĐƯỢC, KHÔNG BỊ SELINUX CHẶN
+//  Ưu tiên 2: /data/data/<pkg>/files/ — thử nếu SELinux cho phép
+//  LUÔN GHI VÀO LOGCAT (xem ngay bằng adb logcat)
 // ================================================================
 static FILE* g_logFile = nullptr;
 static char  g_logPath[256] = {0};
 
-// Đọc package name của chính app đang chạy — không cần hardcode
 static void GetLogPath() {
+    // ════════════════════════════════════════════════════════════
+    //  ƯU TIÊN 1: /data/local/tmp/ — KHÔNG BAO GIỜ BỊ CHẶN
+    // ════════════════════════════════════════════════════════════
+    strcpy(g_logPath, "/data/local/tmp/throwio_axiom_log.txt");
+
+    // ════════════════════════════════════════════════════════════
+    //  ƯU TIÊN 2: thử thư mục riêng của app (nếu SELinux cho phép)
+    // ════════════════════════════════════════════════════════════
     FILE* f = fopen("/proc/self/cmdline", "r");
-    if (!f) {
-        // Fallback nếu đọc cmdline fail
-        strcpy(g_logPath, "/data/local/tmp/throwio_log.txt");
-        return;
+    if (f) {
+        char pkgName[128] = {0};
+        fread(pkgName, 1, sizeof(pkgName) - 1, f);
+        fclose(f);
+        
+        char testPath[256];
+        snprintf(testPath, sizeof(testPath), "/data/data/%s/files/throwio_log.txt", pkgName);
+        
+        // Thử mở thử xem được không
+        FILE* test = fopen(testPath, "a");
+        if (test) {
+            fclose(test);
+            strcpy(g_logPath, testPath);
+        }
     }
-
-    char pkgName[128] = {0};
-    fread(pkgName, 1, sizeof(pkgName) - 1, f);
-    fclose(f);
-
-    // cmdline có thể có ký tự null giữa chừng — chỉ lấy phần đầu
-    snprintf(g_logPath, sizeof(g_logPath),
-             "/data/data/%s/files/throwio_log.txt", pkgName);
 }
 
 static void FileLog(const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    
+    // ── 1. GHI LUÔN VÀO LOGCAT (xem được NGAY BÂY GIỜ bằng adb) ──
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    __android_log_print(ANDROID_LOG_INFO, "THROWIO_FILELOG", "%s", buf);
+
+    // ── 2. GHI VÀO FILE ──
     if (!g_logFile) {
         if (g_logPath[0] == '\0') GetLogPath();
-
+        
         g_logFile = fopen(g_logPath, "a");
-
-        // Nếu /data/data/<pkg>/files/ chưa tồn tại → tạo thư mục rồi mở lại
+        
+        // Thử tạo thư mục nếu cần
         if (!g_logFile) {
             char dirPath[256];
             snprintf(dirPath, sizeof(dirPath), "%s", g_logPath);
@@ -60,16 +82,21 @@ static void FileLog(const char* fmt, ...) {
             g_logFile = fopen(g_logPath, "a");
         }
 
-        if (g_logFile) fprintf(g_logFile, "\n=== NEW SESSION (path: %s) ===\n", g_logPath);
+        if (g_logFile) {
+            fprintf(g_logFile, "\n=== NEW SESSION (path: %s) ===\n", g_logPath);
+            __android_log_print(ANDROID_LOG_INFO, "THROWIO_FILELOG", 
+                                "[SUCCESS] Log file opened: %s", g_logPath);
+        } else {
+            __android_log_print(ANDROID_LOG_ERROR, "THROWIO_FILELOG", 
+                                "[FAIL] Cannot open log file! errno=%d path=%s", 
+                                errno, g_logPath);
+        }
     }
-    if (!g_logFile) return;
-
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(g_logFile, fmt, args);
-    va_end(args);
-    fprintf(g_logFile, "\n");
-    fflush(g_logFile);   // flush ngay — không mất log nếu crash
+    
+    if (g_logFile) {
+        fprintf(g_logFile, "%s\n", buf);
+        fflush(g_logFile);
+    }
 }
 
 // ================================================================
@@ -92,13 +119,12 @@ void* g_BalanceInstance_New = nullptr;
 void* g_BalanceInstance_Old = nullptr;
 void* g_PlayerDataInstance  = nullptr;
 
-// Đếm số lần hook thực sự được GỌI
 static int g_callCount_SoftMoney_New = 0;
 static int g_callCount_SoftMoney_Old = 0;
 static int g_callCount_AddMoney      = 0;
 
 // ================================================================
-//  OFFSETS — verified khớp dump.cs
+//  OFFSETS
 // ================================================================
 namespace Offsets {
     constexpr uintptr_t set_SoftMoney_New  = 0x1315B48;
