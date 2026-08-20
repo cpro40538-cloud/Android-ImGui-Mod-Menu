@@ -29,12 +29,11 @@ bool bBypassAntiCheat = true;
 float speedFactor     = 3.0f;
 int targetLevel       = 99;
 
-// FIX: Capture instance de goi lai chu dong
 void* g_BalanceInstance_New = nullptr;
 void* g_BalanceInstance_Old = nullptr;
 
 // ================================================================
-//  OFFSETS
+//  OFFSETS — verified 100% khớp dump.cs boss man
 // ================================================================
 namespace Offsets {
     constexpr uintptr_t set_SoftMoney_New  = 0x1315B48;
@@ -58,11 +57,16 @@ namespace Offsets {
 // ================================================================
 //  POINTERS
 // ================================================================
-using fn_void_int64       = void (*)(void*, int64_t);
-using fn_void_int         = void (*)(void*, int);
-using fn_void_bool        = void (*)(void*, bool);
-using fn_void_float       = void (*)(void*, float);
-using fn_bool_damage      = bool (*)(void*, int64_t, void*, bool, bool, int);
+using fn_void_int64  = void (*)(void*, int64_t);
+using fn_void_int    = void (*)(void*, int);
+using fn_void_bool   = void (*)(void*, bool);
+using fn_void_float  = void (*)(void*, float);
+
+// [FIX] Signature thật của ApplyDamage — return void, 6 tham số
+// Dump.cs: public void ApplyDamage(long damage, Character from, bool isCritical,
+//                                   bool poisonAttack, bool candyPoisonAttack,
+//                                   Character.DamageSource damageSource)
+using fn_void_damage = void (*)(void*, int64_t, void*, bool, bool, bool, int);
 
 fn_void_int64  old_set_SoftMoney_New  = nullptr;
 fn_void_int64  old_set_HardMoney_New  = nullptr;
@@ -79,18 +83,18 @@ fn_void_bool   old_set_NoAds_Old      = nullptr;
 fn_void_bool   old_set_VipActive_Old  = nullptr;
 fn_void_bool   old_set_undead         = nullptr;
 fn_void_float  old_SetMoveSpeedFactor = nullptr;
-fn_bool_damage old_ApplyDamage        = nullptr;
+fn_void_damage old_ApplyDamage        = nullptr;   // [FIX] type mới
 
 // ================================================================
-//  HOOK IMPLEMENTATIONS - THEM CAPTURE INSTANCE
+//  HOOK IMPLEMENTATIONS
 // ================================================================
 void hk_set_SoftMoney_New(void* self, int64_t v) {
-    if (self) g_BalanceInstance_New = self; // CAPTURE
+    if (self) g_BalanceInstance_New = self;
     if (bInfiniteSoft) v = 999999999LL;
     if (old_set_SoftMoney_New) old_set_SoftMoney_New(self, v);
 }
 void hk_set_SoftMoney_Old(void* self, int64_t v) {
-    if (self) g_BalanceInstance_Old = self; // CAPTURE
+    if (self) g_BalanceInstance_Old = self;
     if (bInfiniteSoft) v = 999999999LL;
     if (old_set_SoftMoney_Old) old_set_SoftMoney_Old(self, v);
 }
@@ -107,14 +111,17 @@ void hk_set_VipActive_New(void* self, bool v) { if (self) g_BalanceInstance_New 
 void hk_set_VipActive_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = self; if (bVipActive) v = true; if (old_set_VipActive_Old) old_set_VipActive_Old(self, v); }
 void hk_set_undead(void* self, bool v) { if (bGodMode) v = true; if (old_set_undead) old_set_undead(self, v); }
 void hk_SetMoveSpeedFactor(void* self, float factor) { if (bSpeedHack) factor *= speedFactor; if (old_SetMoveSpeedFactor) old_SetMoveSpeedFactor(self, factor); }
-bool hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit, bool isPoison, int src) {
-    if (bNoDamage) return false;
-    return old_ApplyDamage ? old_ApplyDamage(self, dmg, from, isCrit, isPoison, src) : false;
+
+// [FIX] Sửa đúng signature — return void, đủ 6 tham số
+void hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit,
+                     bool isPoison, bool isCandyPoison, int src) {
+    if (bNoDamage) return;   // [FIX] return void, không phải false
+    if (old_ApplyDamage)
+        old_ApplyDamage(self, dmg, from, isCrit, isPoison, isCandyPoison, src);
 }
 
 // ================================================================
-//  FORCE APPLY - Chu dong goi lai setter voi instance da capture
-//  Goi ham nay MOI FRAME de cac toggle co tac dung ngay lap tuc
+//  FORCE APPLY
 // ================================================================
 void ForceApplyToggles() {
     void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
@@ -153,8 +160,15 @@ void ForceApplyToggles() {
 //  VE GIAO DIEN
 // ================================================================
 void DrawMenu() {
-    // FIX: Goi force apply moi frame de toggle co tac dung ngay
     ForceApplyToggles();
+
+    // [DEBUG] Log mỗi giây — xem tiền có bị server ghi đè không
+    static int dbgFrame = 0;
+    if (dbgFrame++ % 60 == 0) {
+        void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
+        LOGI("[DBG] inst=%p useNew=%d bInfiniteSoft=%d",
+             inst, g_BalanceInstance_New != nullptr, bInfiniteSoft);
+    }
 
     static bool bStyleInit = false;
     if (!bStyleInit) {
@@ -170,7 +184,6 @@ void DrawMenu() {
     ImGui::SetNextWindowSize(ImVec2(390, 450), ImGuiCond_FirstUseEver);
     ImGui::Begin("  THROW.IO  |  AXIOM MOD  ");
 
-    // Debug status
     ImGui::TextColored(
         (g_BalanceInstance_New || g_BalanceInstance_Old) ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
         (g_BalanceInstance_New || g_BalanceInstance_Old) ? "Instance: OK" : "Instance: CHUA CO (vao tran choi truoc)"
@@ -198,7 +211,7 @@ void DrawMenu() {
 }
 
 // ================================================================
-//  LUONG CHINH
+//  LUONG CHINH — thêm log OK/FAIL từng hook
 // ================================================================
 void* thread(void*) {
     initModMenu((void*)DrawMenu);
@@ -210,8 +223,18 @@ void* thread(void*) {
     LOGI("[+] libil2cpp detected, waiting for unpack...");
     sleep(3);
 
+    // [FIX] Macro log rõ OK/FAIL từng cái — không còn fail âm thầm
     #define HOOK(off, hk, orig) \
-        DobbyHook((void*)getAbsoluteAddress("libil2cpp.so", off), (void*)hk, (void**)&orig)
+        do { \
+            void* addr = (void*)getAbsoluteAddress("libil2cpp.so", off); \
+            if (!addr) { \
+                LOGE("[FAIL] addr NULL @ 0x%lX (%s)", (unsigned long)off, #hk); \
+                break; \
+            } \
+            auto ret = DobbyHook(addr, (void*)hk, (void**)&orig); \
+            if (ret == 0) LOGI("[OK] %s @ 0x%lX", #hk, (unsigned long)off); \
+            else LOGE("[FAIL] DobbyHook ret=%d %s @ 0x%lX", (int)ret, #hk, (unsigned long)off); \
+        } while (0)
 
     HOOK(Offsets::set_SoftMoney_New,  hk_set_SoftMoney_New,  old_set_SoftMoney_New);
     HOOK(Offsets::set_HardMoney_New,  hk_set_HardMoney_New,  old_set_HardMoney_New);
