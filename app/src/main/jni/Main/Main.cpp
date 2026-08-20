@@ -7,11 +7,70 @@
 #include <dobby.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <cstdio>
+#include <cstdarg>
+#include <cstring>
 #include <android/log.h>
+#include <sys/stat.h>   // ✅ Thêm cho mkdir()
 
 #define LOG_TAG "THROWIO_AXIOM"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// ================================================================
+//  FILE LOG — GHI VÀO THƯ MỤC RIÊNG CỦA APP → KHÔNG CẦN PERMISSION
+//  Tự đọc package name từ /proc/self/cmdline
+// ================================================================
+static FILE* g_logFile = nullptr;
+static char  g_logPath[256] = {0};
+
+// Đọc package name của chính app đang chạy — không cần hardcode
+static void GetLogPath() {
+    FILE* f = fopen("/proc/self/cmdline", "r");
+    if (!f) {
+        // Fallback nếu đọc cmdline fail
+        strcpy(g_logPath, "/data/local/tmp/throwio_log.txt");
+        return;
+    }
+
+    char pkgName[128] = {0};
+    fread(pkgName, 1, sizeof(pkgName) - 1, f);
+    fclose(f);
+
+    // cmdline có thể có ký tự null giữa chừng — chỉ lấy phần đầu
+    snprintf(g_logPath, sizeof(g_logPath),
+             "/data/data/%s/files/throwio_log.txt", pkgName);
+}
+
+static void FileLog(const char* fmt, ...) {
+    if (!g_logFile) {
+        if (g_logPath[0] == '\0') GetLogPath();
+
+        g_logFile = fopen(g_logPath, "a");
+
+        // Nếu /data/data/<pkg>/files/ chưa tồn tại → tạo thư mục rồi mở lại
+        if (!g_logFile) {
+            char dirPath[256];
+            snprintf(dirPath, sizeof(dirPath), "%s", g_logPath);
+            char* lastSlash = strrchr(dirPath, '/');
+            if (lastSlash) {
+                *lastSlash = '\0';
+                mkdir(dirPath, 0777);
+            }
+            g_logFile = fopen(g_logPath, "a");
+        }
+
+        if (g_logFile) fprintf(g_logFile, "\n=== NEW SESSION (path: %s) ===\n", g_logPath);
+    }
+    if (!g_logFile) return;
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_logFile, fmt, args);
+    va_end(args);
+    fprintf(g_logFile, "\n");
+    fflush(g_logFile);   // flush ngay — không mất log nếu crash
+}
 
 // ================================================================
 //  TOGGLES & BIEN TOAN CUC
@@ -31,9 +90,15 @@ int targetLevel       = 99;
 
 void* g_BalanceInstance_New = nullptr;
 void* g_BalanceInstance_Old = nullptr;
+void* g_PlayerDataInstance  = nullptr;
+
+// Đếm số lần hook thực sự được GỌI
+static int g_callCount_SoftMoney_New = 0;
+static int g_callCount_SoftMoney_Old = 0;
+static int g_callCount_AddMoney      = 0;
 
 // ================================================================
-//  OFFSETS — verified 100% khớp dump.cs boss man
+//  OFFSETS — verified khớp dump.cs
 // ================================================================
 namespace Offsets {
     constexpr uintptr_t set_SoftMoney_New  = 0x1315B48;
@@ -52,6 +117,7 @@ namespace Offsets {
     constexpr uintptr_t set_undead         = 0x12FA72C;
     constexpr uintptr_t SetMoveSpeedFactor = 0x12FB514;
     constexpr uintptr_t ApplyDamage        = 0x12FB55C;
+    constexpr uintptr_t AddMoney           = 0x130B2C0;
 }
 
 // ================================================================
@@ -61,12 +127,8 @@ using fn_void_int64  = void (*)(void*, int64_t);
 using fn_void_int    = void (*)(void*, int);
 using fn_void_bool   = void (*)(void*, bool);
 using fn_void_float  = void (*)(void*, float);
-
-// [FIX] Signature thật của ApplyDamage — return void, 6 tham số
-// Dump.cs: public void ApplyDamage(long damage, Character from, bool isCritical,
-//                                   bool poisonAttack, bool candyPoisonAttack,
-//                                   Character.DamageSource damageSource)
 using fn_void_damage = void (*)(void*, int64_t, void*, bool, bool, bool, int);
+using fn_void_addmoney = void (*)(void*, int, int64_t, void*, void*);
 
 fn_void_int64  old_set_SoftMoney_New  = nullptr;
 fn_void_int64  old_set_HardMoney_New  = nullptr;
@@ -83,18 +145,27 @@ fn_void_bool   old_set_NoAds_Old      = nullptr;
 fn_void_bool   old_set_VipActive_Old  = nullptr;
 fn_void_bool   old_set_undead         = nullptr;
 fn_void_float  old_SetMoveSpeedFactor = nullptr;
-fn_void_damage old_ApplyDamage        = nullptr;   // [FIX] type mới
+fn_void_damage old_ApplyDamage        = nullptr;
+fn_void_addmoney old_AddMoney         = nullptr;
 
 // ================================================================
 //  HOOK IMPLEMENTATIONS
 // ================================================================
 void hk_set_SoftMoney_New(void* self, int64_t v) {
     if (self) g_BalanceInstance_New = self;
+    g_callCount_SoftMoney_New++;
+    if (g_callCount_SoftMoney_New <= 5 || g_callCount_SoftMoney_New % 20 == 0)
+        FileLog("[HIT] set_SoftMoney_New called #%d self=%p v=%lld",
+                 g_callCount_SoftMoney_New, self, (long long)v);
     if (bInfiniteSoft) v = 999999999LL;
     if (old_set_SoftMoney_New) old_set_SoftMoney_New(self, v);
 }
 void hk_set_SoftMoney_Old(void* self, int64_t v) {
     if (self) g_BalanceInstance_Old = self;
+    g_callCount_SoftMoney_Old++;
+    if (g_callCount_SoftMoney_Old <= 5 || g_callCount_SoftMoney_Old % 20 == 0)
+        FileLog("[HIT] set_SoftMoney_Old called #%d self=%p v=%lld",
+                 g_callCount_SoftMoney_Old, self, (long long)v);
     if (bInfiniteSoft) v = 999999999LL;
     if (old_set_SoftMoney_Old) old_set_SoftMoney_Old(self, v);
 }
@@ -112,12 +183,19 @@ void hk_set_VipActive_Old(void* self, bool v) { if (self) g_BalanceInstance_Old 
 void hk_set_undead(void* self, bool v) { if (bGodMode) v = true; if (old_set_undead) old_set_undead(self, v); }
 void hk_SetMoveSpeedFactor(void* self, float factor) { if (bSpeedHack) factor *= speedFactor; if (old_SetMoveSpeedFactor) old_SetMoveSpeedFactor(self, factor); }
 
-// [FIX] Sửa đúng signature — return void, đủ 6 tham số
 void hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit,
                      bool isPoison, bool isCandyPoison, int src) {
-    if (bNoDamage) return;   // [FIX] return void, không phải false
+    if (bNoDamage) return;
     if (old_ApplyDamage)
         old_ApplyDamage(self, dmg, from, isCrit, isPoison, isCandyPoison, src);
+}
+
+void hk_AddMoney(void* self, int type, int64_t number, void* source, void* item) {
+    if (self) g_PlayerDataInstance = self;
+    g_callCount_AddMoney++;
+    FileLog("[HIT] AddMoney called #%d self=%p type=%d number=%lld",
+             g_callCount_AddMoney, self, type, (long long)number);
+    if (old_AddMoney) old_AddMoney(self, type, number, source, item);
 }
 
 // ================================================================
@@ -162,12 +240,12 @@ void ForceApplyToggles() {
 void DrawMenu() {
     ForceApplyToggles();
 
-    // [DEBUG] Log mỗi giây — xem tiền có bị server ghi đè không
     static int dbgFrame = 0;
-    if (dbgFrame++ % 60 == 0) {
+    if (dbgFrame++ % 120 == 0) {
         void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
-        LOGI("[DBG] inst=%p useNew=%d bInfiniteSoft=%d",
-             inst, g_BalanceInstance_New != nullptr, bInfiniteSoft);
+        FileLog("[TICK] inst=%p pdata=%p callSoftNew=%d callSoftOld=%d callAddMoney=%d",
+                 inst, g_PlayerDataInstance,
+                 g_callCount_SoftMoney_New, g_callCount_SoftMoney_Old, g_callCount_AddMoney);
     }
 
     static bool bStyleInit = false;
@@ -184,10 +262,13 @@ void DrawMenu() {
     ImGui::SetNextWindowSize(ImVec2(390, 450), ImGuiCond_FirstUseEver);
     ImGui::Begin("  THROW.IO  |  AXIOM MOD  ");
 
+    void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
     ImGui::TextColored(
-        (g_BalanceInstance_New || g_BalanceInstance_Old) ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
-        (g_BalanceInstance_New || g_BalanceInstance_Old) ? "Instance: OK" : "Instance: CHUA CO (vao tran choi truoc)"
+        inst ? ImVec4(0,1,0,1) : ImVec4(1,0.3f,0.3f,1),
+        inst ? "Instance: OK" : "Instance: CHUA CO (vao tran choi truoc)"
     );
+    ImGui::Text("SoftNew=%d SoftOld=%d AddMoney=%d",
+                g_callCount_SoftMoney_New, g_callCount_SoftMoney_Old, g_callCount_AddMoney);
 
     if (ImGui::BeginTabBar("MainTabs")) {
         if (ImGui::BeginTabItem(" TIEN TE ")) {
@@ -211,29 +292,26 @@ void DrawMenu() {
 }
 
 // ================================================================
-//  LUONG CHINH — thêm log OK/FAIL từng hook
+//  LUONG CHINH
 // ================================================================
 void* thread(void*) {
     initModMenu((void*)DrawMenu);
+    FileLog("=== INIT START ===");
 
-    do {
-        sleep(1);
-    } while (getAbsoluteAddress("libil2cpp.so", 0) == 0);
-
-    LOGI("[+] libil2cpp detected, waiting for unpack...");
+    do { sleep(1); } while (getAbsoluteAddress("libil2cpp.so", 0) == 0);
+    FileLog("[+] libil2cpp detected, base=%p", (void*)getAbsoluteAddress("libil2cpp.so", 0));
     sleep(3);
 
-    // [FIX] Macro log rõ OK/FAIL từng cái — không còn fail âm thầm
     #define HOOK(off, hk, orig) \
         do { \
             void* addr = (void*)getAbsoluteAddress("libil2cpp.so", off); \
             if (!addr) { \
-                LOGE("[FAIL] addr NULL @ 0x%lX (%s)", (unsigned long)off, #hk); \
+                FileLog("[FAIL] addr NULL @ 0x%lX (%s)", (unsigned long)off, #hk); \
                 break; \
             } \
             auto ret = DobbyHook(addr, (void*)hk, (void**)&orig); \
-            if (ret == 0) LOGI("[OK] %s @ 0x%lX", #hk, (unsigned long)off); \
-            else LOGE("[FAIL] DobbyHook ret=%d %s @ 0x%lX", (int)ret, #hk, (unsigned long)off); \
+            if (ret == 0) FileLog("[OK] %s @ 0x%lX -> %p", #hk, (unsigned long)off, addr); \
+            else FileLog("[FAIL] DobbyHook ret=%d %s @ 0x%lX", (int)ret, #hk, (unsigned long)off); \
         } while (0)
 
     HOOK(Offsets::set_SoftMoney_New,  hk_set_SoftMoney_New,  old_set_SoftMoney_New);
@@ -252,9 +330,11 @@ void* thread(void*) {
     HOOK(Offsets::set_undead,         hk_set_undead,         old_set_undead);
     HOOK(Offsets::SetMoveSpeedFactor, hk_SetMoveSpeedFactor, old_SetMoveSpeedFactor);
     HOOK(Offsets::ApplyDamage,        hk_ApplyDamage,        old_ApplyDamage);
+    HOOK(Offsets::AddMoney,           hk_AddMoney,           old_AddMoney);
 
     #undef HOOK
 
+    FileLog("[+] ALL HOOKS DONE");
     LOGI("[+] ALL HOOKS DONE!");
     pthread_exit(0);
 }
