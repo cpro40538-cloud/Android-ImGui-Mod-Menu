@@ -16,6 +16,14 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // ================================================================
+//  [FIX] I-CACHE FLUSH — Dobby ghi bytes mới nhưng CPU có thể vẫn
+//  chạy code cũ từ instruction cache nếu không invalidate thủ công
+// ================================================================
+static void FlushInstructionCache(void* addr, size_t size) {
+    __builtin___clear_cache((char*)addr, (char*)addr + size);
+}
+
+// ================================================================
 //  TOGGLES & BIEN TOAN CUC
 // ================================================================
 bool bInfiniteSoft    = false;
@@ -53,26 +61,8 @@ static int g_callCount_SpeedFactor   = 0;
 static char g_bytesDump[8][96];
 static int  g_bytesDumpCount = 0;
 
-// ════════════════════════════════════════════════════════════════
-//  [NEW] TEST QUYẾT ĐỊNH — DUMP BYTES TRƯỚC vs SAU KHI HOOK
-// ════════════════════════════════════════════════════════════════
-static char g_bytesBefore[4][96];
-static char g_bytesAfter[4][96];
-static int  g_bytesIdx = 0;
-
-static void DumpBytes(char out[96], void* addr) {
-    if (!addr) { snprintf(out, 96, "addr=NULL"); return; }
-    unsigned char* p = (unsigned char*)addr;
-    snprintf(out, 96, "%02X %02X %02X %02X %02X %02X %02X %02X",
-             p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7]);
-}
-
-// ================================================================
-//  BYTE SANITY CHECK
-// ================================================================
 static void DumpBytesAtAddr(const char* label, void* addr) {
     if (g_bytesDumpCount >= 8) return;
-
     if (!addr) {
         snprintf(g_bytesDump[g_bytesDumpCount++], 96, "%s: addr=NULL", label);
         return;
@@ -81,8 +71,6 @@ static void DumpBytesAtAddr(const char* label, void* addr) {
     snprintf(g_bytesDump[g_bytesDumpCount++], 96,
              "%s: %02X %02X %02X %02X %02X %02X %02X %02X",
              label, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
-    LOGI("[BYTES] %s @ %p: %02X %02X %02X %02X %02X %02X %02X %02X",
-         label, addr, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
 }
 
 // ================================================================
@@ -163,20 +151,17 @@ void hk_set_NoAds_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = se
 void hk_set_VipActive_New(void* self, bool v) { if (self) g_BalanceInstance_New = self; if (bVipActive) v = true; if (old_set_VipActive_New) old_set_VipActive_New(self, v); }
 void hk_set_VipActive_Old(void* self, bool v) { if (self) g_BalanceInstance_Old = self; if (bVipActive) v = true; if (old_set_VipActive_Old) old_set_VipActive_Old(self, v); }
 void hk_set_undead(void* self, bool v) { if (bGodMode) v = true; if (old_set_undead) old_set_undead(self, v); }
-
 void hk_SetMoveSpeedFactor(void* self, float factor) {
     g_callCount_SpeedFactor++;
     if (bSpeedHack) factor *= speedFactor;
     if (old_SetMoveSpeedFactor) old_SetMoveSpeedFactor(self, factor);
 }
-
 void hk_ApplyDamage(void* self, int64_t dmg, void* from, bool isCrit,
                      bool isPoison, bool isCandyPoison, int src) {
     if (bNoDamage) return;
     if (old_ApplyDamage)
         old_ApplyDamage(self, dmg, from, isCrit, isPoison, isCandyPoison, src);
 }
-
 void hk_AddMoney(void* self, int type, int64_t number, void* source, void* item) {
     if (self) g_PlayerDataInstance = self;
     g_callCount_AddMoney++;
@@ -241,7 +226,6 @@ void DrawMenu() {
 
     void* inst = g_BalanceInstance_New ? g_BalanceInstance_New : g_BalanceInstance_Old;
 
-    // ── DEBUG PANEL ─────────────────────────────────────────────
     ImGui::TextColored(ImVec4(1,1,0,1), "-- DEBUG --");
     ImGui::Text("il2cpp base: %p", g_il2cppBase);
     ImGui::TextColored(g_hooksInstalled ? ImVec4(0,1,0,1) : ImVec4(1,0.5f,0,1),
@@ -255,14 +239,6 @@ void DrawMenu() {
         "SpeedFactor calls: %d  (di chuyen nhan vat de test)",
         g_callCount_SpeedFactor
     );
-
-    // ════════════════════════════════════════════════════════════
-    //  [NEW] HIỂN THỊ BYTES TRƯỚC vs SAU KHI HOOK
-    // ════════════════════════════════════════════════════════════
-    ImGui::TextColored(ImVec4(1,1,0,1), "-- BEFORE vs AFTER HOOK --");
-    ImGui::Text("SpeedFactor BEFORE: %s", g_bytesBefore[0]);
-    ImGui::Text("SpeedFactor AFTER:  %s", g_bytesAfter[0]);
-
     ImGui::Separator();
 
     ImGui::Text("CallCount: SoftNew=%d SoftOld=%d AddMoney=%d",
@@ -272,13 +248,6 @@ void DrawMenu() {
         inst ? "Instance: OK" : "Instance: CHUA CO"
     );
     ImGui::Separator();
-
-    ImGui::TextColored(ImVec4(0,0.9f,1,1), "-- RAW BYTES @ PATCH ADDR --");
-    for (int i = 0; i < g_bytesDumpCount; i++) {
-        ImGui::TextWrapped("%s", g_bytesDump[i]);
-    }
-    ImGui::Separator();
-    // ─────────────────────────────────────────────────────────────
 
     if (ImGui::BeginTabBar("MainTabs")) {
         if (ImGui::BeginTabItem(" TIEN TE ")) {
@@ -314,6 +283,7 @@ void* thread(void*) {
     LOGI("[+] libil2cpp base=%p", g_il2cppBase);
     sleep(3);
 
+    // [FIX] Thêm FlushInstructionCache ngay sau khi patch thành công
     #define HOOK(off, hk, orig) \
         do { \
             void* addr = (void*)getAbsoluteAddress("libil2cpp.so", off); \
@@ -323,8 +293,10 @@ void* thread(void*) {
                 break; \
             } \
             auto ret = DobbyHook(addr, (void*)hk, (void**)&orig); \
-            if (ret == 0) g_hookOK++; \
-            else { \
+            if (ret == 0) { \
+                g_hookOK++; \
+                FlushInstructionCache(addr, 64); /* [FIX] flush icache */ \
+            } else { \
                 g_hookFAIL++; \
                 snprintf(g_lastFail, sizeof(g_lastFail), "%s DobbyFail ret=%d", #hk, (int)ret); \
             } \
@@ -332,8 +304,6 @@ void* thread(void*) {
 
     DumpBytesAtAddr("AddMoney", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::AddMoney));
     DumpBytesAtAddr("SoftMoney_New", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_SoftMoney_New));
-    DumpBytesAtAddr("SoftMoney_Old", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_SoftMoney_Old));
-    DumpBytesAtAddr("SetUndead", (void*)getAbsoluteAddress("libil2cpp.so", Offsets::set_undead));
 
     HOOK(Offsets::set_SoftMoney_New,  hk_set_SoftMoney_New,  old_set_SoftMoney_New);
     HOOK(Offsets::set_HardMoney_New,  hk_set_HardMoney_New,  old_set_HardMoney_New);
@@ -349,24 +319,7 @@ void* thread(void*) {
     HOOK(Offsets::set_NoAds_Old,      hk_set_NoAds_Old,      old_set_NoAds_Old);
     HOOK(Offsets::set_VipActive_Old,  hk_set_VipActive_Old,  old_set_VipActive_Old);
     HOOK(Offsets::set_undead,         hk_set_undead,         old_set_undead);
-
-    // ════════════════════════════════════════════════════════════
-    //  [NEW] HOOK SetMoveSpeedFactor RIÊNG — DUMP TRƯỚC & SAU
-    // ════════════════════════════════════════════════════════════
-    {
-        void* addr = (void*)getAbsoluteAddress("libil2cpp.so", Offsets::SetMoveSpeedFactor);
-        DumpBytes(g_bytesBefore[0], addr);
-
-        auto ret = DobbyHook(addr, (void*)hk_SetMoveSpeedFactor, (void**)&old_SetMoveSpeedFactor);
-        if (ret == 0) g_hookOK++;
-        else {
-            g_hookFAIL++;
-            snprintf(g_lastFail, sizeof(g_lastFail), "SetMoveSpeedFactor DobbyFail ret=%d", (int)ret);
-        }
-
-        DumpBytes(g_bytesAfter[0], addr);   // đọc lại NGAY sau patch
-    }
-
+    HOOK(Offsets::SetMoveSpeedFactor, hk_SetMoveSpeedFactor, old_SetMoveSpeedFactor);
     HOOK(Offsets::ApplyDamage,        hk_ApplyDamage,        old_ApplyDamage);
     HOOK(Offsets::AddMoney,           hk_AddMoney,           old_AddMoney);
 
