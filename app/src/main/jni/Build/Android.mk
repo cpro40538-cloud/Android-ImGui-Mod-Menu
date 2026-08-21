@@ -12,12 +12,15 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE    := ModMenu
 
-# Code optimization
 LOCAL_CFLAGS := -Wno-error=format-security -fvisibility=hidden -ffunction-sections -fdata-sections -w
 LOCAL_CFLAGS += -fno-rtti -fexceptions -fpermissive
 LOCAL_CPPFLAGS := -Wno-error=format-security -fvisibility=hidden -ffunction-sections -fdata-sections -w -Werror -s -std=c++17
 LOCAL_CPPFLAGS += -Wno-error=c++11-narrowing -fms-extensions -fno-rtti -fexceptions -fpermissive
-LOCAL_LDFLAGS += -Wl,--gc-sections, -llog
+
+# [FIX] Thêm dòng này — bắt buộc để cài được trên Android 15 / 16KB page size
+LOCAL_LDFLAGS += -Wl,-z,max-page-size=16384
+LOCAL_LDFLAGS += -Wl,--gc-sections,--strip-all,-llog
+
 LOCAL_ARM_MODE := arm
 
 LOCAL_STATIC_LIBRARIES := libdobby
@@ -32,11 +35,11 @@ LOCAL_SRC_FILES := ../Main/Main.cpp \
                    ../Include/ImGui/imgui_demo.cpp \
                    ../Include/ImGui/imgui_tables.cpp \
                    ../Include/ImGui/imgui_widgets.cpp \
-				   ../Include/xdl/xdl.c \
-				   ../Include/xdl/xdl_iterate.c \
-				   ../Include/xdl/xdl_linker.c \
-				   ../Include/xdl/xdl_lzma.c \
-				   ../Include/xdl/xdl_util.c \
+                   ../Include/xdl/xdl.c \
+                   ../Include/xdl/xdl_iterate.c \
+                   ../Include/xdl/xdl_linker.c \
+                   ../Include/xdl/xdl_lzma.c \
+                   ../Include/xdl/xdl_util.c \
                    ../Include/KittyMemory/KittyMemory.cpp \
                    ../Include/KittyMemory/MemoryPatch.cpp \
                    ../Include/KittyMemory/MemoryBackup.cpp \
@@ -54,10 +57,14 @@ LOCAL_CFLAGS := -Wno-error=format-security -fvisibility=hidden -ffunction-sectio
 LOCAL_CFLAGS += -fno-rtti -fexceptions -fpermissive
 LOCAL_CPPFLAGS := -Wno-error=format-security -fvisibility=hidden -ffunction-sections -fdata-sections -w -Werror -s -std=c++17
 LOCAL_CPPFLAGS += -Wno-error=c++11-narrowing -fms-extensions -fno-rtti -fexceptions -fpermissive
-LOCAL_LDFLAGS += -Wl,--gc-sections,--strip-all, -llog
+
+# [FIX] Thêm dòng này cho module Loader luôn
+LOCAL_LDFLAGS += -Wl,-z,max-page-size=16384
+LOCAL_LDFLAGS += -Wl,--gc-sections,--strip-all,-llog
+
 LOCAL_ARM_MODE := arm
 
-LOCAL_SRC_FILES := ../Loader/Loader.cpp \
+LOCAL_SRC_FILES := ../Loader/Loader.cpp
 LOCAL_LDLIBS := -llog -landroid
 
 include $(BUILD_SHARED_LIBRARY)
