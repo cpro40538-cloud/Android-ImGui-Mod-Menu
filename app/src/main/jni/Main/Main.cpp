@@ -32,7 +32,8 @@ static bool bOneShotKill  = false;
 static bool bInfAmmo      = false;
 static bool bNoRecoil     = false;
 static bool bSpeedHack    = false;
-static bool bFreezeMoney  = false;
+static bool bFullMoney    = false;   // Gold/Grenade/Medical/Ticket → 999999999
+static bool bFullBox      = false;   // Copper/Silver/Gold box → 999999999
 static bool bNoAds        = false;
 static bool bUnlockWeapon = false;
 static bool bEspBox       = false;
@@ -46,6 +47,21 @@ static float AimFov     = 150.0f;
 static float damageMult = 999.0f;
 
 // ================================================================
+//  CommonDataType values (từ dump.cs)
+//  GOLD=1, GRENADE=2, MEDICAL=3, TICKET=4, WEAPONFRAGMENTS=5
+//  WEAPON=101, SKIN=102
+//  BOX_COPPER=103, BOX_SILVER=104, BOX_GOLDEN=105
+// ================================================================
+#define CT_GOLD       1
+#define CT_GRENADE    2
+#define CT_MEDICAL    3
+#define CT_TICKET     4
+#define CT_WEAPON     101
+#define CT_BOX_COPPER 103
+#define CT_BOX_SILVER 104
+#define CT_BOX_GOLDEN 105
+
+// ================================================================
 //  ESP
 // ================================================================
 struct EspEntry { void* inst; long ts; float hp; float maxHp; };
@@ -57,9 +73,9 @@ static long now_ms() {
 }
 
 // ================================================================
-//  UNITY API — RVA từ dump.cs (UnityEngine module)
+//  UNITY CAMERA API
 //  Camera.get_main          @ 0x251B400
-//  Camera.WorldToScreenPoint@ 0x251B1DC  (no eye param)
+//  Camera.WorldToScreenPoint@ 0x251B1DC
 //  Component.get_transform  @ 0x253EF08
 //  Transform.get_position   @ 0x254B0DC
 // ================================================================
@@ -85,9 +101,13 @@ static void EnsureAttached() {
 }
 
 // ================================================================
-//  HOOK: God Mode + One Shot Kill
+//  HOOK: God Mode + One Shot Kill — ĐÃ FIX
 //  CharacterDamage.ApplyDamage — RVA: 0x119235C
-//  Fields: AIComponent@0x30, hitPoints@0x40, initialHitPoints@0x44
+//
+//  FIX: isPlayer = "kẻ TẤN CÔNG là player" (không phải target)
+//  Dùng AIComponent@0x30 để xác định TARGET:
+//    null     = TARGET là player (mình) → GodMode skip
+//    non-null = TARGET là zombie/enemy  → OneShotKill nhân damage
 // ================================================================
 static void (*old_ApplyDamage)(void* _this,
     float dmg,
@@ -103,52 +123,85 @@ static void hook_ApplyDamage(void* _this,
     void* attacker, bool isPlayer, bool isExplosion,
     void* hitBody, float force, bool isHead)
 {
-    if (bGodMode && isPlayer) return;
-    if (bOneShotKill && !isPlayer) dmg *= damageMult;
+    if (!_this) goto call_orig;
+
+    {
+        // AIComponent@0x30: null=player, !null=zombie/NPC
+        void* aiComp      = *(void**)((uint8_t*)_this + 0x30);
+        bool targetIsPlayer = (aiComp == nullptr);
+
+        // GodMode: chỉ block khi TARGET là mình
+        if (bGodMode && targetIsPlayer) return;
+
+        // OneShotKill: chỉ nhân damage khi TARGET là zombie/enemy
+        if (bOneShotKill && !targetIsPlayer)
+            dmg *= damageMult;
+    }
+
+call_orig:
     if (old_ApplyDamage)
         old_ApplyDamage(_this, dmg, dx, dy, dz, ax, ay, az,
                         attacker, isPlayer, isExplosion, hitBody, force, isHead);
 }
 
 // ================================================================
-//  HOOK: Infinite Ammo
+//  HOOK: Infinite Ammo — GIỮ NGUYÊN (đúng rồi)
 //  WeaponBehavior.Update() — RVA: 0x1309740
 //  Fields: bulletsLeft@0x114, bulletsPerClip@0x118
 //          ammo@0x110, maxAmmo@0x120
 //
-//  KHÔNG có HaveAmmo()/DecreaseBullets() trong dump!
-//  Hook Update() và ghi đè trực tiếp vào field mỗi frame.
+//  No Recoil FIX: patch spread fields tại đây thay vì
+//  hook SprayDirection() (hook đó gây ghost bullet)
+//    shotSpread    @ 0x5E0
+//    shotSpreadAmt @ 0x5E4
+//    currentSpread @ 0x560
+//    kickUpAmt     @ 0x608
+//    kickSideAmt   @ 0x60C
+//    kickRollAmt   @ 0x610
 // ================================================================
 static void (*old_WeapUpdate)(void* inst);
 static void hook_WeapUpdate(void* inst) {
     if (old_WeapUpdate) old_WeapUpdate(inst);
-    if (!bInfAmmo || !inst) return;
-    int perClip = *(int*)((uint8_t*)inst + 0x118);
-    int maxAmmo = *(int*)((uint8_t*)inst + 0x120);
-    *(int*)((uint8_t*)inst + 0x114) = perClip; // bulletsLeft = bulletsPerClip
-    *(int*)((uint8_t*)inst + 0x110) = maxAmmo; // ammo = maxAmmo
+    if (!inst) return;
+
+    if (bInfAmmo) {
+        int perClip = *(int*)((uint8_t*)inst + 0x118);
+        int maxAmmo = *(int*)((uint8_t*)inst + 0x120);
+        *(int*)((uint8_t*)inst + 0x114) = perClip;
+        *(int*)((uint8_t*)inst + 0x110) = maxAmmo;
+    }
+
+    if (bNoRecoil) {
+        // Zero spread → đạn luôn chính xác tuyệt đối
+        *(float*)((uint8_t*)inst + 0x5E0) = 0.0f; // shotSpread
+        *(float*)((uint8_t*)inst + 0x5E4) = 0.0f; // shotSpreadAmt
+        *(float*)((uint8_t*)inst + 0x560) = 0.0f; // currentSpread
+        // Zero kick → không giật súng
+        *(float*)((uint8_t*)inst + 0x608) = 0.0f; // kickUpAmt
+        *(float*)((uint8_t*)inst + 0x60C) = 0.0f; // kickSideAmt
+        *(float*)((uint8_t*)inst + 0x610) = 0.0f; // kickRollAmt
+    }
 }
 
 // ================================================================
-//  HOOK: No Recoil / No Spread
-//  WeaponBehavior.SprayDirection() — RVA: 0x130E23C
-//  Trả về Vector3.zero khi bNoRecoil bật.
-//  KHÔNG có CalcSpread() trong dump — SprayDirection là hàm đúng.
-// ================================================================
-static Vector3 (*old_SprayDirection)(void* inst);
-static Vector3 hook_SprayDirection(void* inst) {
-    if (bNoRecoil) return {0.0f, 0.0f, 0.0f};
-    return old_SprayDirection ? old_SprayDirection(inst) : Vector3{0,0,0};
-}
-
-// ================================================================
-//  HOOK: Speed Hack
-//  FPSRigidBodyWalker.FixedUpdate() — RVA: 0x12EC900
-//  Fields: walkSpeed@0xD4, sprintSpeed@0xD8, moveSpeedMult@0xE8
+//  HOOK: No Recoil — THAY THẾ SprayDirection bằng WeaponKick
+//  WeaponBehavior.WeaponKick() — RVA: 0x130E3BC
 //
-//  KHÔNG có get_speed() method — speed là plain fields.
-//  Nhân tạm trước khi gọi FixedUpdate, khôi phục sau để
-//  tránh lưu giá trị nhân vào file save.
+//  FIX: Hook WeaponKick() thay vì SprayDirection()
+//  SprayDirection() trả về TOÀN BỘ hướng bắn — return {0,0,0}
+//  khiến raycast fail → ghost bullet → không damage
+//  WeaponKick() chỉ xử lý visual kick → skip an toàn
+// ================================================================
+static void (*old_WeaponKick)(void* inst);
+static void hook_WeaponKick(void* inst) {
+    if (bNoRecoil) return; // skip visual kick hoàn toàn
+    if (old_WeaponKick) old_WeaponKick(inst);
+}
+
+// ================================================================
+//  HOOK: Speed Hack — GIỮ NGUYÊN (đúng rồi)
+//  FPSRigidBodyWalker.FixedUpdate() — RVA: 0x12EC900
+//  walkSpeed@0xD4, sprintSpeed@0xD8
 // ================================================================
 static void (*old_FPSFixedUpdate)(void* inst);
 static void hook_FPSFixedUpdate(void* inst) {
@@ -167,42 +220,78 @@ static void hook_FPSFixedUpdate(void* inst) {
 }
 
 // ================================================================
-//  HOOK: Freeze Money
-//  ItemDataManager.GetCurrency(CommonDataType type) — RVA: 0x12BF2FC
-//  STATIC method, không có this ptr.
+//  HOOK: Full Money + Full Rương — ĐÃ TÁCH
+//  ItemDataManager.GetCurrency — RVA: 0x12BF2FC (display)
+//  ItemDataManager.SetCurrency — RVA: 0x12BF350 (prevent spend)
+//
+//  bFullMoney: Gold(1), Grenade(2), Medical(3), Ticket(4) → 999M
+//  bFullBox:   BOX_COPPER(103), BOX_SILVER(104), BOX_GOLDEN(105) → 999M
 // ================================================================
-static int (*old_GetCurrency)(int type);
+static int  (*old_GetCurrency)(int type);
+static void (*old_SetCurrency)(int type, int num);
+
 static int hook_GetCurrency(int type) {
     int real = old_GetCurrency ? old_GetCurrency(type) : 0;
-    LOGI("[GetCurrency] type=%d real=%d bFreezeMoney=%d", type, real, bFreezeMoney);
-    return bFreezeMoney ? 999999999 : real;
+
+    if (bFullMoney && (type == CT_GOLD    ||
+                       type == CT_GRENADE ||
+                       type == CT_MEDICAL ||
+                       type == CT_TICKET))
+        return 999999999;
+
+    if (bFullBox && (type == CT_BOX_COPPER ||
+                     type == CT_BOX_SILVER  ||
+                     type == CT_BOX_GOLDEN))
+        return 999999999;
+
+    return real;
+}
+
+static void hook_SetCurrency(int type, int num) {
+    // Prevent spending khi Full Money bật
+    if (bFullMoney && (type == CT_GOLD    ||
+                       type == CT_GRENADE ||
+                       type == CT_MEDICAL ||
+                       type == CT_TICKET)) {
+        // Ghi đè thành 999M thay vì giá trị mới (thường thấp hơn)
+        if (old_SetCurrency) old_SetCurrency(type, 999999999);
+        return;
+    }
+    // Prevent spending box keys khi Full Box bật
+    if (bFullBox && (type == CT_BOX_COPPER ||
+                     type == CT_BOX_SILVER  ||
+                     type == CT_BOX_GOLDEN)) {
+        if (old_SetCurrency) old_SetCurrency(type, 999999999);
+        return;
+    }
+    if (old_SetCurrency) old_SetCurrency(type, num);
 }
 
 // ================================================================
 //  HOOK: No Ads + Unlock All Weapons
-//  LoadingOnces — KHÔNG có getter/setter properties trong dump!
-//  isNoAds là public bool @ 0x48, unLockAllWeapon @ 0x45.
-//  Cách đúng: hook Awake() để lấy instance pointer, sau đó
-//  ghi trực tiếp vào field mỗi giây trong polling thread.
-//
 //  LoadingOnces.Awake() — RVA: 0x12D711C
+//  isNoAds@0x48, unLockAllWeapon@0x45
 // ================================================================
-static void*  g_loadingInst = nullptr;
+static void* g_loadingInst = nullptr;
 
 static void (*old_LoadingAwake)(void* inst);
 static void hook_LoadingAwake(void* inst) {
     g_loadingInst = inst;
     if (old_LoadingAwake) old_LoadingAwake(inst);
-    // Áp dụng ngay khi Awake chạy
     if (bNoAds)        *(bool*)((uint8_t*)inst + 0x48) = true;
     if (bUnlockWeapon) *(bool*)((uint8_t*)inst + 0x45) = true;
 }
 
 // ================================================================
-//  HOOK: ESP — CharacterDamage.Update()
-//  RVA: 0x1191E10
-//  Fields: AIComponent@0x30 (null=player), hitPoints@0x40,
-//          initialHitPoints@0x44, myTransform@0xF0
+//  HOOK: ESP — ĐÃ FIX factionNum filter
+//  CharacterDamage.Update() — RVA: 0x1191E10
+//  AIComponent@0x30, hitPoints@0x40, initialHitPoints@0x44
+//  myTransform@0xF0
+//
+//  FIX: Đọc AI.factionNum@0xEC từ AIComponent:
+//    1 = NPC đồng minh (theo mày) → SKIP
+//    2 = zombie/địch hostile       → VẼ ESP
+//    3 = zombie/địch hostile       → VẼ ESP
 // ================================================================
 static void (*old_CharDmgUpdate)(void* inst);
 static void hook_CharDmgUpdate(void* inst) {
@@ -211,7 +300,13 @@ static void hook_CharDmgUpdate(void* inst) {
     if (!bEspBox && !bEspLine && !bEspDist && !bEspHp) return;
 
     void* aiComp = *(void**)((uint8_t*)inst + 0x30);
-    if (!aiComp) return; // player, bo qua
+    if (!aiComp) return; // player, bỏ qua
+
+    // FIX: factionNum từ AI class @ 0xEC
+    // 1 = friendly NPC đồng minh → bỏ qua
+    // 2, 3 = hostile zombie/enemy → track
+    int factionNum = *(int*)((uint8_t*)aiComp + 0xEC);
+    if (factionNum == 1) return;
 
     float hp    = *(float*)((uint8_t*)inst + 0x40);
     float maxHp = *(float*)((uint8_t*)inst + 0x44);
@@ -243,7 +338,7 @@ static void hook_CharDmgUpdate(void* inst) {
 static void DrawMenu() {
     EnsureAttached();
 
-    // Polling: cap nhat NoAds/Unlock moi frame neu co instance
+    // Polling NoAds/Unlock mỗi frame
     if (g_loadingInst) {
         if (bNoAds)        *(bool*)((uint8_t*)g_loadingInst + 0x48) = true;
         if (bUnlockWeapon) *(bool*)((uint8_t*)g_loadingInst + 0x45) = true;
@@ -269,11 +364,12 @@ static void DrawMenu() {
     ImDrawList* draw = ImGui::GetBackgroundDrawList();
     ImVec2 scr       = ImGui::GetIO().DisplaySize;
 
+    // Aim Circle
     if (bAimCircle)
         draw->AddCircle(ImVec2(scr.x * 0.5f, scr.y * 0.5f),
                         AimFov, IM_COL32(255,255,255,170), 128, 1.6f);
 
-    // ESP
+    // ── ESP DRAW ──────────────────────────────────────────────
     if ((bEspBox || bEspLine || bEspDist || bEspHp) &&
         Camera_get_main && Component_get_transform &&
         Camera_WorldToScreenPoint && Transform_get_position)
@@ -285,7 +381,9 @@ static void DrawMenu() {
             for (int i = 0; i < 128; i++) {
                 void* entry = espList[i].inst;
                 if (!entry) continue;
-                if (now - espList[i].ts > 5000) { espList[i].inst = nullptr; continue; }
+                if (now - espList[i].ts > 5000) {
+                    espList[i].inst = nullptr; continue;
+                }
 
                 void* myTrans = *(void**)((uint8_t*)entry + 0xF0);
                 if (!myTrans) continue;
@@ -309,14 +407,17 @@ static void DrawMenu() {
                                         : IM_COL32(60,255,120,245);
 
                 if (bEspLine)
-                    draw->AddLine(ImVec2(scr.x*0.5f, scr.y), ImVec2(fx,fy),
+                    draw->AddLine(ImVec2(scr.x*0.5f, scr.y),
+                                  ImVec2(fx, fy),
                                   IM_COL32(255,70,70,200), 1.3f);
 
                 if (bEspBox) {
                     float lx=fx-w*0.5f, rx=fx+w*0.5f;
                     float cw=w*0.22f, ch=h*0.18f;
-                    draw->AddRect(ImVec2(lx-1,hy-1),ImVec2(rx+1,fy+1),IM_COL32(0,0,0,160),0,0,2.5f);
+                    draw->AddRect(ImVec2(lx-1,hy-1),ImVec2(rx+1,fy+1),
+                                  IM_COL32(0,0,0,160),0,0,2.5f);
                     draw->AddRect(ImVec2(lx,hy),ImVec2(rx,fy),boxCol,0,0,1.4f);
+                    // Corner brackets
                     draw->AddLine(ImVec2(lx,hy),ImVec2(lx+cw,hy),IM_COL32(255,255,255,220),2.f);
                     draw->AddLine(ImVec2(lx,hy),ImVec2(lx,hy+ch),IM_COL32(255,255,255,220),2.f);
                     draw->AddLine(ImVec2(rx,hy),ImVec2(rx-cw,hy),IM_COL32(255,255,255,220),2.f);
@@ -326,22 +427,29 @@ static void DrawMenu() {
                     draw->AddLine(ImVec2(rx,fy),ImVec2(rx-cw,fy),IM_COL32(255,255,255,220),2.f);
                     draw->AddLine(ImVec2(rx,fy),ImVec2(rx,fy-ch),IM_COL32(255,255,255,220),2.f);
                 }
+
                 if (bEspDist) {
                     char buf[24]; snprintf(buf,sizeof(buf),"%.0fm",d);
-                    draw->AddText(ImVec2(fx-10.f,hy-16.f),IM_COL32(255,220,0,255),buf);
+                    draw->AddText(ImVec2(fx-10.f,hy-16.f),
+                                  IM_COL32(255,220,0,255),buf);
                 }
+
                 if (bEspHp && espList[i].maxHp > 0.f) {
                     float ratio = espList[i].hp / espList[i].maxHp;
-                    if (ratio<0.f) ratio=0.f; if (ratio>1.f) ratio=1.f;
+                    if (ratio<0.f) ratio=0.f;
+                    if (ratio>1.f) ratio=1.f;
                     float bx = fx+w*0.5f+4.f;
-                    draw->AddRectFilled(ImVec2(bx-1,hy-1),ImVec2(bx+5,fy+1),IM_COL32(0,0,0,180));
+                    draw->AddRectFilled(ImVec2(bx-1,hy-1),ImVec2(bx+5,fy+1),
+                                        IM_COL32(0,0,0,180));
                     ImU32 hpCol = ratio>0.6f ? IM_COL32(0,255,80,255)
                                 : ratio>0.3f ? IM_COL32(255,200,0,255)
                                              : IM_COL32(255,0,0,255);
                     float top = hy+h*(1.f-ratio);
                     draw->AddRectFilled(ImVec2(bx,top),ImVec2(bx+4,fy),hpCol);
-                    char hpBuf[16]; snprintf(hpBuf,sizeof(hpBuf),"%.0f",espList[i].hp);
-                    draw->AddText(ImVec2(bx+6.f,top-2.f),IM_COL32(255,255,255,220),hpBuf);
+                    char hpBuf[16];
+                    snprintf(hpBuf,sizeof(hpBuf),"%.0f",espList[i].hp);
+                    draw->AddText(ImVec2(bx+6.f,top-2.f),
+                                  IM_COL32(255,255,255,220),hpBuf);
                 }
             }
             espMtx.unlock();
@@ -349,56 +457,136 @@ static void DrawMenu() {
     }
 
     // ── MENU WINDOW ────────────────────────────────────────────
-    // FIX: Bỏ NoCollapse|NoResize để menu kéo to/đóng nhỏ được
-    ImGui::SetNextWindowSize(ImVec2(360, 460), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(360, 490), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(10, 10),    ImGuiCond_FirstUseEver);
     ImGui::Begin("  ZOMBIE3D MOD  |  AXIOM DEV  ", nullptr, 0);
 
     ImGui::TextColored(ImVec4(0.f,0.8f,1.f,1.f), "  AXIOM DEVELOPMENT");
-    ImGui::Separator(); ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
 
     if (ImGui::BeginTabBar("tabs")) {
 
+        // ── TAB: NGUOI CHOI ──────────────────────────────────
         if (ImGui::BeginTabItem(T("NGUOI CHOI","PLAYER"))) {
             ImGui::Spacing();
-            ImGui::Checkbox(T("Bat Tu (God Mode)",      "God Mode"),      &bGodMode);    ImGui::Spacing();
-            ImGui::Checkbox(T("Mot Phat Diet Tat",      "One Shot Kill"), &bOneShotKill);
-            if (bOneShotKill) { ImGui::SetNextItemWidth(-1); ImGui::SliderFloat(T("Nhan Sat Thuong","Dmg Multi"),&damageMult,10.f,9999.f,"x%.0f"); }
+
+            ImGui::Checkbox(T("Bat Tu (God Mode)","God Mode"), &bGodMode);
             ImGui::Spacing();
-            ImGui::Checkbox(T("Dan Vo Han",             "Inf Ammo"),      &bInfAmmo);    ImGui::Spacing();
-            ImGui::Checkbox(T("Khong Giat Sung",        "No Recoil"),     &bNoRecoil);   ImGui::Spacing();
-            ImGui::Checkbox(T("Tang Toc Do Di Chuyen",  "Speed Hack"),    &bSpeedHack);
-            if (bSpeedHack) { ImGui::SetNextItemWidth(-1); ImGui::SliderFloat(T("Toc Do x","Speed x"),&speedMult,1.f,5.f,"x%.1f"); }
+
+            ImGui::Checkbox(T("Mot Phat Diet Tat","One Shot Kill"), &bOneShotKill);
+            if (bOneShotKill) {
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderFloat(
+                    T("Nhan Sat Thuong","Dmg Multiplier"),
+                    &damageMult, 10.f, 9999.f, "x%.0f");
+            }
+            ImGui::Spacing();
+
+            ImGui::Checkbox(T("Dan Vo Han","Inf Ammo"), &bInfAmmo);
+            ImGui::Spacing();
+
+            ImGui::Checkbox(T("Khong Giat Sung","No Recoil"), &bNoRecoil);
+            ImGui::Spacing();
+
+            ImGui::Checkbox(T("Tang Toc Do Di Chuyen","Speed Hack"), &bSpeedHack);
+            if (bSpeedHack) {
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderFloat(
+                    T("Toc Do","Speed"),
+                    &speedMult, 1.f, 5.f, "x%.1f");
+            }
+
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(T("TIEN TE","ECONOMY"))) {
+        // ── TAB: TÀI NGUYÊN ─────────────────────────────────
+        if (ImGui::BeginTabItem(T("TAI NGUYEN","RESOURCES"))) {
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.6f,0.6f,0.6f,1.f),"  Gold/Grenade/Medical -> 999,999,999");
+
+            // Full Money
+            ImGui::TextColored(ImVec4(1.f,0.85f,0.f,1.f),
+                T("  TIEN TE (Gold/Grenade/Medical)","  CURRENCY"));
             ImGui::Spacing();
-            ImGui::Checkbox(T("Dong Bang Tien",         "Freeze Money"),  &bFreezeMoney); ImGui::Spacing();
-            ImGui::Separator(); ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.f,0.75f,0.f,1.f), T("  Vat Pham","  Items")); ImGui::Spacing();
-            ImGui::Checkbox(T("Mo Khoa Tat Ca Sung",    "Unlock All Weapons"),&bUnlockWeapon); ImGui::Spacing();
-            ImGui::Checkbox(T("Bo Quang Cao",           "No Ads"),        &bNoAds);
+            ImGui::Checkbox(
+                T("Full Tien [999,999,999]","Full Money [999,999,999]"),
+                &bFullMoney);
+            if (bFullMoney) {
+                ImGui::TextColored(ImVec4(0.5f,1.f,0.5f,1.f),
+                    T("  Gold + Luu dan + Y te = 999M",
+                      "  Gold + Ammo + Medical = 999M"));
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // Full Rương
+            ImGui::TextColored(ImVec4(1.f,0.6f,0.f,1.f),
+                T("  RUONG (Copper/Silver/Gold)","  BOXES"));
+            ImGui::Spacing();
+            ImGui::Checkbox(
+                T("Full Ruong [999,999,999 Keys]","Full Boxes [999,999,999 Keys]"),
+                &bFullBox);
+            if (bFullBox) {
+                ImGui::TextColored(ImVec4(0.5f,1.f,0.5f,1.f),
+                    T("  Ruong Dong + Bac + Vang = 999M Keys",
+                      "  Copper + Silver + Gold Box = 999M Keys"));
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // Unlock / NoAds
+            ImGui::TextColored(ImVec4(0.7f,0.7f,1.f,1.f),
+                T("  VAT PHAM","  ITEMS"));
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Mo Khoa Tat Ca Sung","Unlock All Weapons"),
+                            &bUnlockWeapon);
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Bo Quang Cao","No Ads"), &bNoAds);
+
             ImGui::EndTabItem();
         }
 
+        // ── TAB: DINH VI ─────────────────────────────────────
         if (ImGui::BeginTabItem(T("DINH VI","ESP"))) {
             ImGui::Spacing();
-            ImGui::Checkbox(T("Hop Zombie",     "Enemy Box"),  &bEspBox);  ImGui::Spacing();
-            ImGui::Checkbox(T("Duong Den Dich", "Enemy Line"), &bEspLine); ImGui::Spacing();
-            ImGui::Checkbox(T("Khoang Cach",    "Distance"),   &bEspDist); ImGui::Spacing();
-            ImGui::Checkbox(T("Thanh Mau HP",   "HP Bar"),     &bEspHp);   ImGui::Spacing();
-            ImGui::Separator(); ImGui::Spacing();
-            ImGui::Checkbox(T("Vong Tron Aim",  "Aim Circle"), &bAimCircle);
-            if (bAimCircle) { ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("FOV",&AimFov,50.f,400.f,"%.0f px"); }
+
+            ImGui::Checkbox(T("Hop Zombie/Dich","Enemy Box"),  &bEspBox);
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Duong Den Dich","Enemy Line"),  &bEspLine);
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Khoang Cach","Distance"),       &bEspDist);
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Thanh Mau HP","HP Bar"),        &bEspHp);
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::Checkbox(T("Vong Tron Aim","Aim Circle"),   &bAimCircle);
+            if (bAimCircle) {
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderFloat("FOV", &AimFov, 50.f, 400.f, "%.0f px");
+            }
+
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.5f,0.5f,0.5f,1.f),
+                T("  Chi hien thi zombie/dich that su",
+                  "  Only shows actual enemies/zombies"));
+            ImGui::TextColored(ImVec4(0.5f,0.5f,0.5f,1.f),
+                T("  Bo qua NPC dong minh (faction 1)",
+                  "  Ignores friendly NPCs (faction 1)"));
+
             ImGui::EndTabItem();
         }
 
+        // ── TAB: NGÔN NGỮ ────────────────────────────────────
         if (ImGui::BeginTabItem(T("NGON NGU","LANG"))) {
             ImGui::Spacing();
             if (ImGui::RadioButton("Tieng Viet", lang_idx==0)) lang_idx=0;
+            ImGui::Spacing();
             if (ImGui::RadioButton("English",    lang_idx==1)) lang_idx=1;
             ImGui::EndTabItem();
         }
@@ -409,55 +597,52 @@ static void DrawMenu() {
 }
 
 // ================================================================
-//  MAIN THREAD — hook toàn bộ sau khi libil2cpp load xong
+//  MAIN THREAD
 // ================================================================
 void* thread(void*) {
     initModMenu((void*)DrawMenu);
 
-    // Chờ libil2cpp nạp xong
     do { sleep(1); } while (getAbsoluteAddress("libil2cpp.so", 0) == 0);
-    LOGI("[+] libil2cpp detected, waiting 3s for unpack...");
+    LOGI("[+] libil2cpp detected, waiting 3s...");
     sleep(3);
 
-    // Gán Unity API pointers (không dùng DobbyHook, chỉ cast)
-    uintptr_t base = getAbsoluteAddress("libil2cpp.so", 0);
-
-    Camera_get_main          = (void*(*)())
+    // Unity Camera API
+    Camera_get_main = (void*(*)())
         (void*)getAbsoluteAddress("libil2cpp.so", 0x251B400);
-    Camera_WorldToScreenPoint= (Vector3(*)(void*,Vector3))
+    Camera_WorldToScreenPoint = (Vector3(*)(void*,Vector3))
         (void*)getAbsoluteAddress("libil2cpp.so", 0x251B1DC);
-    Component_get_transform  = (void*(*)(void*))
+    Component_get_transform = (void*(*)(void*))
         (void*)getAbsoluteAddress("libil2cpp.so", 0x253EF08);
-    Transform_get_position   = (Vector3(*)(void*))
+    Transform_get_position = (Vector3(*)(void*))
         (void*)getAbsoluteAddress("libil2cpp.so", 0x254B0DC);
 
-    // Macro helper với log
     #define HOOK(rva, hk, orig) do { \
         void* _addr = (void*)getAbsoluteAddress("libil2cpp.so", rva); \
         int _r = DobbyHook(_addr, (void*)hk, (void**)&orig); \
-        LOGI("[HOOK] %s RVA=0x%lx addr=%p ret=%d", #hk, (uintptr_t)rva, _addr, _r); \
+        LOGI("[HOOK] %s RVA=0x%lx ret=%d", #hk, (uintptr_t)rva, _r); \
     } while(0)
 
-    // CharacterDamage
-    HOOK(0x119235C, hook_ApplyDamage,   old_ApplyDamage);
-    HOOK(0x1191E10, hook_CharDmgUpdate, old_CharDmgUpdate);
+    // ── CharacterDamage ──────────────────────────────────────
+    HOOK(0x119235C, hook_ApplyDamage,   old_ApplyDamage);   // GodMode+OneShotKill FIX
+    HOOK(0x1191E10, hook_CharDmgUpdate, old_CharDmgUpdate); // ESP + factionNum FIX
 
-    // WeaponBehavior: Inf Ammo + No Recoil
-    HOOK(0x1309740, hook_WeapUpdate,    old_WeapUpdate);
-    HOOK(0x130E23C, hook_SprayDirection,old_SprayDirection);
+    // ── WeaponBehavior ───────────────────────────────────────
+    HOOK(0x1309740, hook_WeapUpdate,    old_WeapUpdate);    // InfAmmo + NoRecoil spread FIX
+    HOOK(0x130E3BC, hook_WeaponKick,    old_WeaponKick);    // NoRecoil visual FIX (thay SprayDirection)
 
-    // FPSRigidBodyWalker: Speed Hack
-    HOOK(0x12EC900, hook_FPSFixedUpdate,old_FPSFixedUpdate);
+    // ── FPSRigidBodyWalker ───────────────────────────────────
+    HOOK(0x12EC900, hook_FPSFixedUpdate, old_FPSFixedUpdate); // SpeedHack
 
-    // ItemDataManager: Freeze Money
-    HOOK(0x12BF2FC, hook_GetCurrency,   old_GetCurrency);
+    // ── ItemDataManager ──────────────────────────────────────
+    HOOK(0x12BF2FC, hook_GetCurrency,   old_GetCurrency);   // Full Money + Full Rương display
+    HOOK(0x12BF350, hook_SetCurrency,   old_SetCurrency);   // Full Money + Full Rương prevent spend
 
-    // LoadingOnces: No Ads + Unlock Weapons (qua Awake)
-    HOOK(0x12D711C, hook_LoadingAwake,  old_LoadingAwake);
+    // ── LoadingOnces ─────────────────────────────────────────
+    HOOK(0x12D711C, hook_LoadingAwake,  old_LoadingAwake);  // NoAds + UnlockWeapons
 
     #undef HOOK
 
-    LOGI("[+] ALL HOOKS DONE!");
+    LOGI("[+] ALL HOOKS DONE — AXIOM DEV");
     pthread_exit(0);
 }
 
