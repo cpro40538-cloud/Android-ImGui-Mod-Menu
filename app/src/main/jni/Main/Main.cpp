@@ -180,14 +180,21 @@ static void hook_CharDmgUpdate(void* inst){
     }
 
     if(!isPlayer&&aiComp){
+        // FIX: huntPlayer@0x10C — FIELD QUAN TRONG NHAT
+        // true  = NPC dang ATTACK player = Zombie/Enemy that → process
+        // false = NPC companion theo player                  → SKIP HOAN TOAN
+        // Day la ly do ESP/OneShot/AimKill gim nham NPC companion
+        bool huntsPlayer=*(bool*)((uint8_t*)aiComp+0x10C);
+        if(!huntsPlayer)return; // NPC companion, bo qua tat ca
+
         float hp   =*(float*)((uint8_t*)inst+0x40);
         float maxHp=*(float*)((uint8_t*)inst+0x44);
 
-        // OneShotKill
+        // OneShotKill — chi giet zombie/enemy that su (da filter companion phia tren)
         if(bOneShotKill&&hp>0.f)
             *(float*)((uint8_t*)inst+0x40)=0.0f;
 
-        // ESP + AimKill tracking — lưu world pos
+        // ESP + AimKill tracking — luu world pos
         bool needTrack=(bEspBox||bEspLine||bEspDist||bEspHp||bAimKill||bAimbot);
         if(needTrack&&maxHp>0.f){
             // Lấy world position từ myTransform
@@ -233,6 +240,13 @@ static void hook_WeapUpdate(void* inst){
     if(bInfAmmo){
         *(int*)((uint8_t*)inst+0x114)=*(int*)((uint8_t*)inst+0x118);
         *(int*)((uint8_t*)inst+0x110)=*(int*)((uint8_t*)inst+0x120);
+    }
+    // FIX can't shoot after fly: Force canShoot=true, cantFireState=false
+    // canShoot@0x39C bi set false khi flying=true (game tu lock weapon)
+    // cantFireState@0x3E5 cung can reset
+    if(bFly){
+        *(bool*)((uint8_t*)inst+0x39C)=true;  // canShoot = true
+        *(bool*)((uint8_t*)inst+0x3E5)=false; // cantFireState = false
     }
     if(bNoRecoil){
         *(float*)((uint8_t*)inst+0x5E0)=0.f;*(float*)((uint8_t*)inst+0x5E4)=0.f;
@@ -280,15 +294,18 @@ static void hook_FPSFixedUpdate(void* inst){
         if(old_FPSFixedUpdate)old_FPSFixedUpdate(inst);
     }
 
-    // FLY — dùng flying field của game (xác nhận từ dump @ 0x295)
+    // FLY — flying@0x295 xac nhan tu dump (game's own fly field)
     if(bFly){
-        *(bool*) ((uint8_t*)inst+0x295)=true;    // flying = true
-        *(float*)((uint8_t*)inst+0x298)=0.0f;    // flyDownSpeed = 0 (không rớt)
-        *(float*)((uint8_t*)inst+0x2A0)=flySpeed; // verticalSpeedAmt = lên cao
-        *(bool*) ((uint8_t*)inst+0x228)=false;   // grounded = false
+        *(bool*) ((uint8_t*)inst+0x295)=true;     // flying = true
+        *(float*)((uint8_t*)inst+0x298)=0.0f;     // flyDownSpeed = 0 (khong rot)
+        *(float*)((uint8_t*)inst+0x2A0)=flySpeed;  // verticalSpeedAmt
+        *(bool*) ((uint8_t*)inst+0x228)=false;    // grounded = false
+        // FIX can't shoot: hideWeapon bi set true khi fly → reset ve false
+        *(bool*) ((uint8_t*)inst+0x1A0)=false;    // hideWeapon = false
+        *(bool*) ((uint8_t*)inst+0x195)=false;    // lowerGunForClimb = false
     }else{
-        // Nếu tắt fly, reset flying để game physics hoạt động lại
-        *(bool*)((uint8_t*)inst+0x295)=false;
+        *(bool*)((uint8_t*)inst+0x295)=false;      // flying = false, game physics lại
+        *(bool*)((uint8_t*)inst+0x1A0)=false;      // hideWeapon = false (dam bao)
     }
 }
 
@@ -620,7 +637,7 @@ static void DrawMenu(){
             ImGui::Spacing();
             // FPS counter lớn hơn trong tab
             float fpsColor=g_fps>=60?1.f:g_fps>=30?.5f:0.f;
-            ImGui::TextColored(ImVec4(1.f-fpsColor,fpsColor,0,1),"FPS: %.1f",g_fps);
+            ImGui::TextColored(ImVec4(1.f-fpsColor,fpsColor,0,1),"FPS THUC: %.1f",g_fps);
             ImGui::ProgressBar(g_fps/120.f,ImVec2(-1,8));
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(.6f,.6f,.6f,1),
