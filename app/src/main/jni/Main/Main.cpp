@@ -180,12 +180,13 @@ static void hook_CharDmgUpdate(void* inst){
     }
 
     if(!isPlayer&&aiComp){
-        // FIX: huntPlayer@0x10C — FIELD QUAN TRONG NHAT
-        // true  = NPC dang ATTACK player = Zombie/Enemy that → process
-        // false = NPC companion theo player                  → SKIP HOAN TOAN
-        // Day la ly do ESP/OneShot/AimKill gim nham NPC companion
-        bool huntsPlayer=*(bool*)((uint8_t*)aiComp+0x10C);
-        if(!huntsPlayer)return; // NPC companion, bo qua tat ca
+        // FIX ESP COMPANION: Dung followPlayer@0x125 + playerFollow@0x129
+        // huntPlayer@0x10C SAI vi = false khi zombie chua spot player
+        // followPlayer/playerFollow chi true voi NPC companion theo player
+        // → Zombie (du chua hunt) se KHONG co followPlayer=true → HIEN dung
+        bool isCompanion = *(bool*)((uint8_t*)aiComp+0x125)  // followPlayer
+                        || *(bool*)((uint8_t*)aiComp+0x129);  // playerFollow
+        if(isCompanion)return; // companion, bo qua
 
         float hp   =*(float*)((uint8_t*)inst+0x40);
         float maxHp=*(float*)((uint8_t*)inst+0x44);
@@ -294,18 +295,33 @@ static void hook_FPSFixedUpdate(void* inst){
         if(old_FPSFixedUpdate)old_FPSFixedUpdate(inst);
     }
 
-    // FLY — flying@0x295 xac nhan tu dump (game's own fly field)
+    // FLY — flying@0x295 + jumpBtn@0x2B1 (xac nhan tu dump)
+    // FIX BAY NHU BONG BAY: Khong set verticalSpeedAmt lien tuc
+    // Chi len khi nhan jump, xuong khi nhan crouch, hover khi khong nhan gi
     if(bFly){
         *(bool*) ((uint8_t*)inst+0x295)=true;     // flying = true
-        *(float*)((uint8_t*)inst+0x298)=0.0f;     // flyDownSpeed = 0 (khong rot)
-        *(float*)((uint8_t*)inst+0x2A0)=flySpeed;  // verticalSpeedAmt
+        *(float*)((uint8_t*)inst+0x298)=0.0f;     // flyDownSpeed = 0 (khong rot tu do)
         *(bool*) ((uint8_t*)inst+0x228)=false;    // grounded = false
-        // FIX can't shoot: hideWeapon bi set true khi fly → reset ve false
-        *(bool*) ((uint8_t*)inst+0x1A0)=false;    // hideWeapon = false
+        *(bool*) ((uint8_t*)inst+0x1A0)=false;    // hideWeapon = false (fix can't shoot)
         *(bool*) ((uint8_t*)inst+0x195)=false;    // lowerGunForClimb = false
+
+        // Lay InputControl tu FPSRigidBodyWalker@0x30
+        void* inputCtrl=*(void**)((uint8_t*)inst+0x30);
+        bool jumpHeld  = *(bool*)((uint8_t*)inst+0x2B1); // jumpBtn@0x2B1
+        bool crouchHeld= inputCtrl ? *(bool*)((uint8_t*)inputCtrl+0x2F) : false; // crouchHold@0x2F
+
+        // Dieu khien chieu doc:
+        // Jump  → len cao
+        // Crouch → xuong thap
+        // Khong nhan gi → hover tai cho (verticalSpeedAmt=0)
+        float vSpeed = 0.0f;
+        if(jumpHeld)   vSpeed =  flySpeed;  // len
+        if(crouchHeld) vSpeed = -flySpeed;  // xuong
+        *(float*)((uint8_t*)inst+0x2A0)=vSpeed; // verticalSpeedAmt
     }else{
-        *(bool*)((uint8_t*)inst+0x295)=false;      // flying = false, game physics lại
-        *(bool*)((uint8_t*)inst+0x1A0)=false;      // hideWeapon = false (dam bao)
+        *(bool*) ((uint8_t*)inst+0x295)=false;    // flying = false, physics lai
+        *(float*)((uint8_t*)inst+0x2A0)=0.0f;    // reset vertical speed
+        *(bool*) ((uint8_t*)inst+0x1A0)=false;    // hideWeapon = false
     }
 }
 
@@ -495,8 +511,12 @@ static void DrawMenu(){
                 if(!e.inst)continue;
                 if(now-e.ts>5000){e.inst=nullptr;e.screenValid=false;continue;}
 
-                // Get world position từ cached wx/wy/wz
-                Vector3 foot={e.wx,e.wy,e.wz};
+                // Doc world pos TRUC TIEP tu myTransform — luon fresh, khong stale
+                void* myTrans=*(void**)((uint8_t*)e.inst+0xF0); // myTransform@0xF0
+                if(!myTrans){e.screenValid=false;continue;}
+                Vector3 foot=Transform_get_position(myTrans);
+                // Luu lai cho aimbot
+                e.wx=foot.X;e.wy=foot.Y;e.wz=foot.Z;
                 if(foot.Y>500.f||foot.Y<-300.f){e.screenValid=false;continue;}
 
                 Vector3 head=foot;head.Y+=1.85f;
