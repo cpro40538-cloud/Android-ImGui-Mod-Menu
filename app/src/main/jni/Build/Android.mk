@@ -10,7 +10,7 @@ LOCAL_C_INCLUDES += $(MAIN_LOCAL_PATH)/../Include
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE    := ModMenu
+LOCAL_MODULE    := DuongDev
 
 LOCAL_CFLAGS := -Wno-error=format-security -fvisibility=hidden -ffunction-sections -fdata-sections -w
 LOCAL_CFLAGS += -fno-rtti -fexceptions -fpermissive
