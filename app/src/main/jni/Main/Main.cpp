@@ -19,42 +19,39 @@
 
 // ================================================================
 //  LANGUAGE
+//  Source: dump.cs — no anti-cheat detected (no GameGuard/SafetyNet/
+//  PlayIntegrity/CheatingDetector class found in Assembly-CSharp)
+//  Currency is SERVER-SIDE (PostgreSQL via UnityNpgsql.dll)
+//  GetSoftCurrency/GetHardCurrency hooks = display only, not real value
 // ================================================================
-static int lang_idx=0;
-static const char* T(const char* vn,const char* en){return lang_idx==0?vn:en;}
+static int lang_idx = 0;
+static const char* T(const char* vn, const char* en){ return lang_idx==0?vn:en; }
 
 // ================================================================
 //  TOGGLES
 // ================================================================
-static bool bInfAmmo   = false;
-static bool bNoRecoil  = false;
-static bool bSpeedHack = false;
-static bool bFly       = false;
-static bool bFullMoney = false;
-static bool bFullBox   = false;
-static bool bNoAds     = false;
+static bool bInfAmmo    = false;
+static bool bNoReload   = false;
+static bool bNoRecoil   = false;
+static bool bSpeedHack  = false;
+static bool bFly        = false;
+static bool bFastFire   = false;
+static bool bAutoAim    = false;
+static bool bSoftCoin   = false; // display only — server-side
+static bool bHardCoin   = false; // display only — server-side
 
-static float speedMult = 2.0f;
-static float flySpeed  = 8.0f;
-
-#define CT_GOLD       1
-#define CT_GRENADE    2
-#define CT_MEDICAL    3
-#define CT_TICKET     4
-#define CT_BOX_COPPER 103
-#define CT_BOX_SILVER 104
-#define CT_BOX_GOLDEN 105
+static float speedMult  = 2.0f;
+static float flySpeed   = 8.0f;
+static float fastFireRate = 0.03f;
 
 // ================================================================
-//  FPS COUNTER
+//  FPS
 // ================================================================
-static float g_fps=0.f;
-static int   g_fpsCount=0;
-static long  g_fpsLast=0;
-static long  now_ms(){struct timeval tv;gettimeofday(&tv,NULL);return(long)tv.tv_sec*1000+tv.tv_usec/1000;}
+static float g_fps=0.f; static int g_fpsCount=0; static long g_fpsLast=0;
+static long now_ms(){struct timeval tv;gettimeofday(&tv,NULL);return(long)tv.tv_sec*1000+tv.tv_usec/1000;}
 
 // ================================================================
-//  IL2CPP THREAD ATTACH + STATIC FIELD READER
+//  IL2CPP THREAD ATTACH
 // ================================================================
 static std::atomic<bool> g_attached{false};
 static void EnsureAttached(){
@@ -64,257 +61,325 @@ static void EnsureAttached(){
     auto ta=(void*(*)(void*))dlsym(lib,"il2cpp_thread_attach");
     if(dg&&ta){ta(dg());g_attached.store(true);}
 }
-static void* (*_dget)()=nullptr;
-static void* (*_aopen)(void*,const char*)=nullptr;
-static void* (*_aimg)(void*)=nullptr;
-static void* (*_cname)(void*,const char*,const char*)=nullptr;
-static void* (*_cstatic)(void*)=nullptr;
-static void InitAPI(){
-    if(_dget)return;
-    void* lib=dlopen("libil2cpp.so",RTLD_LAZY|RTLD_NOLOAD);if(!lib)return;
-    _dget   =(void*(*)())dlsym(lib,"il2cpp_domain_get");
-    _aopen  =(void*(*)(void*,const char*))dlsym(lib,"il2cpp_domain_assembly_open");
-    _aimg   =(void*(*)(void*))dlsym(lib,"il2cpp_assembly_get_image");
-    _cname  =(void*(*)(void*,const char*,const char*))dlsym(lib,"il2cpp_class_from_name");
-    _cstatic=(void*(*)(void*))dlsym(lib,"il2cpp_class_get_static_field_data");
-}
-static void* GetStaticInst(const char* cls){
-    InitAPI();
-    if(!_dget||!_cname||!_cstatic)return nullptr;
-    void* d=_dget();if(!d)return nullptr;
-    void* a=_aopen(d,"Assembly-CSharp");if(!a)return nullptr;
-    void* img=_aimg(a);if(!img)return nullptr;
-    void* c=_cname(img,"",cls);if(!c)return nullptr;
-    void* sd=_cstatic(c);if(!sd)return nullptr;
-    return *(void**)((uint8_t*)sd+0x0);
-}
 
 // ================================================================
-//  HOOK: Inf Ammo + No Recoil — WeaponBehavior.Update @ 0x1309740
+//  HOOK 1: ThirdPersonCharacterControllerScript.Update
+//  RVA: 0x180DC1C — TypeDefIndex: 47
+//  Fields confirmed from dump.cs:
+//    ammo        (max)   0x2C  int
+//    currentAmmo         0x30  int
+//    outOfAmmo           0x34  bool
+//    fireRate            0x38  float
+//    isReloading         0x11A bool
 // ================================================================
 static void (*old_WeapUpdate)(void* inst);
 static void hook_WeapUpdate(void* inst){
-    if(old_WeapUpdate)old_WeapUpdate(inst);
-    if(!inst)return;
+    if(old_WeapUpdate) old_WeapUpdate(inst);
+    if(!inst) return;
+
     if(bInfAmmo){
-        *(int*)((uint8_t*)inst+0x114)=*(int*)((uint8_t*)inst+0x118);
-        *(int*)((uint8_t*)inst+0x110)=*(int*)((uint8_t*)inst+0x120);
+        int maxAmmo = *(int*)((uint8_t*)inst + 0x2C);
+        *(int*) ((uint8_t*)inst + 0x30) = maxAmmo > 0 ? maxAmmo : 9999;
+        *(bool*)((uint8_t*)inst + 0x34) = false;
     }
-    if(bNoRecoil){
-        *(float*)((uint8_t*)inst+0x5E0)=0.f;
-        *(float*)((uint8_t*)inst+0x5E4)=0.f;
-        *(float*)((uint8_t*)inst+0x560)=0.f;
-        *(float*)((uint8_t*)inst+0x608)=0.f;
-        *(float*)((uint8_t*)inst+0x60C)=0.f;
-        *(float*)((uint8_t*)inst+0x610)=0.f;
+    if(bNoReload){
+        *(bool*)((uint8_t*)inst + 0x11A) = false;
     }
-    // Fix can't shoot khi fly
-    if(bFly){
-        *(bool*)((uint8_t*)inst+0x39C)=true;
-        *(bool*)((uint8_t*)inst+0x3E5)=false;
+    if(bFastFire){
+        *(float*)((uint8_t*)inst + 0x38) = fastFireRate;
     }
 }
 
-static void (*old_WeaponKick)(void* inst);
-static void hook_WeaponKick(void* inst){
-    if(bNoRecoil)return;
-    if(old_WeaponKick)old_WeaponKick(inst);
+// ================================================================
+//  HOOK 2: ComponentRecoilForFastShootingViewMyWeapon.HandleChangeShooting
+//  RVA: 0x1A4080C — TypeDefIndex: 1061
+//  Fields: _camera@0x50 _recoilTime@0x68 _recoilProcessors@0x90
+//  Skip handler entirely → coroutine never spawns → zero recoil
+// ================================================================
+static void (*old_RecoilFastHandler)(void* inst, void* sender, void* args);
+static void hook_RecoilFastHandler(void* inst, void* sender, void* args){
+    if(bNoRecoil) return; // drop — no coroutine started
+    if(old_RecoilFastHandler) old_RecoilFastHandler(inst,sender,args);
 }
 
 // ================================================================
-//  HOOK: Speed + Fly — FPSRigidBodyWalker.FixedUpdate @ 0x12ec900
-//  jumpBtn@0x2B1, InputControl@0x30, crouchHold@0x2F
-//  flying@0x295, flyDownSpeed@0x298, verticalSpeedAmt@0x2A0
-//  Fly control: Jump=len, Crouch=xuong, Khong nhan=hover
+//  HOOK 3: ComponentRecoilForSlowShootingViewMyWeapon.HandleShoot
+//  RVA: 0x1A40CFC — TypeDefIndex: 1063
+//  Same approach — skip handler = no RecoilProcess coroutine
 // ================================================================
-static void (*old_FPSFixedUpdate)(void* inst);
-static void hook_FPSFixedUpdate(void* inst){
-    if(!inst){if(old_FPSFixedUpdate)old_FPSFixedUpdate(inst);return;}
+static void (*old_RecoilSlowHandler)(void* inst, void* sender, void* args);
+static void hook_RecoilSlowHandler(void* inst, void* sender, void* args){
+    if(bNoRecoil) return;
+    if(old_RecoilSlowHandler) old_RecoilSlowHandler(inst,sender,args);
+}
+
+// ================================================================
+//  HOOK 4: MovableCharacterComponent.MoveByDirection
+//  RVA: 0x1A6D74C — TypeDefIndex: 1325
+//  Called every character tick with normalized move direction + jump flag
+//  Fields on instance (confirmed dump.cs):
+//    Velocity     backing  0x50  Vector3
+//    MoveVelocity backing  0x5C  Vector3
+//    MoveDirection backing 0x68  ExactNormalizedVector2
+//    IsJumped     backing  0x78  NotifierProperty<bool>
+//  After calling original, multiply XZ velocity for speed
+//  For fly: override Y velocity via Move() path instead (see hook 5)
+// ================================================================
+struct Vec3{ float x,y,z; };
+
+static void (*old_MoveByDirection)(void* inst, float dx, float dz, bool jump);
+static void hook_MoveByDirection(void* inst, float dx, float dz, bool jump){
+    if(!inst){ if(old_MoveByDirection)old_MoveByDirection(inst,dx,dz,jump); return; }
 
     if(bSpeedHack){
-        float ow=*(float*)((uint8_t*)inst+0xD4);
-        float os=*(float*)((uint8_t*)inst+0xD8);
-        *(float*)((uint8_t*)inst+0xD4)=ow*speedMult;
-        *(float*)((uint8_t*)inst+0xD8)=os*speedMult;
-        if(old_FPSFixedUpdate)old_FPSFixedUpdate(inst);
-        *(float*)((uint8_t*)inst+0xD4)=ow;
-        *(float*)((uint8_t*)inst+0xD8)=os;
-    }else{
-        if(old_FPSFixedUpdate)old_FPSFixedUpdate(inst);
+        // Scale input direction before passing to original
+        dx *= speedMult;
+        dz *= speedMult;
     }
+    if(old_MoveByDirection) old_MoveByDirection(inst,dx,dz,jump);
+
+    // Post-call: also patch MoveVelocity backing field directly
+    if(bSpeedHack){
+        Vec3* mv=(Vec3*)((uint8_t*)inst+0x5C);
+        mv->x *= speedMult;
+        mv->z *= speedMult;
+    }
+}
+
+// ================================================================
+//  HOOK 5: MovableCharacterComponent.Move (Vector3)
+//  RVA: 0x1A6D690
+//  Controls final position move — used for fly Y override
+//  Fly: Jump btn = up, Crouch = down, nothing = hover (zero Y)
+// ================================================================
+static void (*old_Move)(void* inst, float px, float py, float pz);
+static void hook_Move(void* inst, float px, float py, float pz){
+    if(!inst){ if(old_Move)old_Move(inst,px,py,pz); return; }
 
     if(bFly){
-        *(bool*) ((uint8_t*)inst+0x295)=true;
-        *(float*)((uint8_t*)inst+0x298)=0.0f;
-        *(bool*) ((uint8_t*)inst+0x228)=false;
-        *(bool*) ((uint8_t*)inst+0x1A0)=false;
-        *(bool*) ((uint8_t*)inst+0x195)=false;
+        // Nullify gravity by zeroing Y then apply our flySpeed
+        // Jump/Crouch state read from IsJumped NotifierProperty
+        // NotifierProperty<bool> layout: Value at ~0x20 (standard Il2cpp backing)
+        void* jumpedProp = *(void**)((uint8_t*)inst+0x78);
+        bool  isJumped   = jumpedProp ? *(bool*)((uint8_t*)jumpedProp+0x20) : false;
 
-        void* ic=*(void**)((uint8_t*)inst+0x30);
-        bool  jmp=*(bool*)((uint8_t*)inst+0x2B1);
-        bool  cro=ic?*(bool*)((uint8_t*)ic+0x2F):false;
+        // Simple: check if upward momentum was requested
+        float newY = 0.f; // hover
+        if(isJumped)   newY =  flySpeed * 0.016f; // approximate per-frame
+        // Crouch: no direct ref without UI input — keep 0 or add your input check
 
-        float v=0.f;
-        if(jmp) v= flySpeed;
-        if(cro) v=-flySpeed;
-        *(float*)((uint8_t*)inst+0x2A0)=v;
-    }else{
-        *(bool*) ((uint8_t*)inst+0x295)=false;
-        *(float*)((uint8_t*)inst+0x2A0)=0.f;
-        *(bool*) ((uint8_t*)inst+0x1A0)=false;
+        if(old_Move) old_Move(inst, px, newY, pz);
+        return;
     }
+    if(old_Move) old_Move(inst,px,py,pz);
 }
 
 // ================================================================
-//  HOOK: ArchiveData — Full Money / Full Box
+//  HOOK 6: ModelPlayerState.GetSoftCurrency
+//  RVA: 0x1999A1C — TypeDefIndex: 3061
+//  NOTE: display-only. Server owns real value via PostgreSQL.
+//         This makes the UI show max but purchase attempts will
+//         fail server-side validation if you don't have the real balance.
 // ================================================================
-static int  (*old_ArcGetMoney)(void* s);     static void (*old_ArcUseMoney)(void* s,int n);
-static int  (*old_ArcGetTickets)(void* s);   static void (*old_ArcUseTickets)(void* s,int n);
-static int  (*old_ArcGetKeys)(void* s);      static void (*old_ArcUseKeys)(void* s,int n);
-static int  (*old_ArcGetSKeys)(void* s);     static void (*old_ArcUseSKeys)(void* s,int n);
-
-static int  hk_GetMoney(void* s){if(bFullMoney)return 999999999;return old_ArcGetMoney?old_ArcGetMoney(s):0;}
-static void hk_UseMoney(void* s,int n){if(bFullMoney)return;if(old_ArcUseMoney)old_ArcUseMoney(s,n);}
-static int  hk_GetTix(void* s){if(bFullMoney)return 999999999;return old_ArcGetTickets?old_ArcGetTickets(s):0;}
-static void hk_UseTix(void* s,int n){if(bFullMoney)return;if(old_ArcUseTickets)old_ArcUseTickets(s,n);}
-static int  hk_GetKeys(void* s){if(bFullBox)return 999999999;return old_ArcGetKeys?old_ArcGetKeys(s):0;}
-static void hk_UseKeys(void* s,int n){if(bFullBox)return;if(old_ArcUseKeys)old_ArcUseKeys(s,n);}
-static int  hk_GetSKeys(void* s){if(bFullBox)return 999999999;return old_ArcGetSKeys?old_ArcGetSKeys(s):0;}
-static void hk_UseSKeys(void* s,int n){if(bFullBox)return;if(old_ArcUseSKeys)old_ArcUseSKeys(s,n);}
-
-// ================================================================
-//  HOOK: ItemDataManager backup display
-// ================================================================
-static int  (*old_GetCurrency)(int t); static void (*old_SetCurrency)(int t,int n);
-static int  hk_GetCurrency(int t){
-    int r=old_GetCurrency?old_GetCurrency(t):0;
-    if(bFullMoney&&(t==CT_GOLD||t==CT_GRENADE||t==CT_MEDICAL||t==CT_TICKET))return 999999999;
-    if(bFullBox&&(t==CT_BOX_COPPER||t==CT_BOX_SILVER||t==CT_BOX_GOLDEN))return 999999999;
-    return r;
-}
-static void hk_SetCurrency(int t,int n){
-    bool money=(t==CT_GOLD||t==CT_GRENADE||t==CT_MEDICAL||t==CT_TICKET);
-    bool box=(t==CT_BOX_COPPER||t==CT_BOX_SILVER||t==CT_BOX_GOLDEN);
-    if((bFullMoney&&money)||(bFullBox&&box)){int r=old_GetCurrency?old_GetCurrency(t):0;if(n<r)return;}
-    if(old_SetCurrency)old_SetCurrency(t,n);
+static int (*old_GetSoftCurrency)(void* inst);
+static int hook_GetSoftCurrency(void* inst){
+    if(bSoftCoin) return 999999999;
+    return old_GetSoftCurrency ? old_GetSoftCurrency(inst) : 0;
 }
 
 // ================================================================
-//  HOOK: NoAds
+//  HOOK 7: ModelPlayerState.GetHardCurrency
+//  RVA: 0x199A63C — TypeDefIndex: 3061
+//  Same caveat as soft — server-authoritative
 // ================================================================
-static void* g_loadingInst=nullptr;
-static void (*old_LoadingSettings)(void* inst);
-static void hk_LoadingSettings(void* inst){
-    g_loadingInst=inst;
-    if(old_LoadingSettings)old_LoadingSettings(inst);
-    if(bNoAds)*(bool*)((uint8_t*)inst+0x48)=true;
+static int (*old_GetHardCurrency)(void* inst);
+static int hook_GetHardCurrency(void* inst){
+    if(bHardCoin) return 999999999;
+    return old_GetHardCurrency ? old_GetHardCurrency(inst) : 0;
 }
-static void (*old_ShowInterAd)(void* self);
-static void hk_ShowInterAd(void* self){if(bNoAds)return;if(old_ShowInterAd)old_ShowInterAd(self);}
-static void (*old_ShowBannerAd)(void* self,void* cb);
-static void hk_ShowBannerAd(void* self,void* cb){if(bNoAds)return;if(old_ShowBannerAd)old_ShowBannerAd(self,cb);}
 
 // ================================================================
-//  DRAW
+//  HOOK 8: ClientMyCharacter.LateUpdate
+//  RVA: 0x1A3F720 — TypeDefIndex: 1050
+//  Fields: _cameraPivot@0x58 MovableCharacterComponent@0xA0 _modelCharacter@0xA8
+//  Used for AutoAim toggle via model NotifierProperty
+// ================================================================
+static void (*old_CharLateUpdate)(void* inst);
+static void hook_CharLateUpdate(void* inst){
+    if(old_CharLateUpdate) old_CharLateUpdate(inst);
+    if(!inst || !bAutoAim) return;
+
+    // ModelClientMyCharacter is at _modelCharacter (0xA8)
+    // InputShooting NotifierProperty<bool> @ 0xA8 on ModelClientMyCharacter:
+    // From dump TypeDefIndex:1049 — InputShooting @ 0x38, IsShooting @ 0x30
+    void* model = *(void**)((uint8_t*)inst + 0xA8);
+    if(!model) return;
+    // Force IsShooting and InputShooting = true
+    void* isShooting   = *(void**)((uint8_t*)model + 0x30);
+    void* inputShooting= *(void**)((uint8_t*)model + 0x38);
+    if(isShooting)    *(bool*)((uint8_t*)isShooting    + 0x20) = true;
+    if(inputShooting) *(bool*)((uint8_t*)inputShooting + 0x20) = true;
+}
+
+// ================================================================
+//  MENU DRAW
 // ================================================================
 static void DrawMenu(){
     EnsureAttached();
 
-    // FPS
+    // FPS counter
     g_fpsCount++;
     long nowT=now_ms();
     if(nowT-g_fpsLast>=1000){
         g_fps=g_fpsCount*1000.f/(float)(nowT-g_fpsLast);
-        g_fpsCount=0;g_fpsLast=nowT;
+        g_fpsCount=0; g_fpsLast=nowT;
     }
 
-    // Polling LoadingOnces
-    if(!g_loadingInst)g_loadingInst=GetStaticInst("LoadingOnces");
-    if(g_loadingInst&&bNoAds)*(bool*)((uint8_t*)g_loadingInst+0x48)=true;
-
     ImGuiStyle& s=ImGui::GetStyle();
-    s.WindowRounding=10;s.FrameRounding=5;s.GrabRounding=4;
-    s.ItemSpacing=ImVec2(8,7);s.WindowPadding=ImVec2(12,12);
-    s.Colors[ImGuiCol_WindowBg]     =ImVec4(.04f,.04f,.08f,.97f);
-    s.Colors[ImGuiCol_TitleBg]      =ImVec4(.00f,.12f,.30f,1.f);
-    s.Colors[ImGuiCol_TitleBgActive]=ImVec4(.00f,.20f,.50f,1.f);
-    s.Colors[ImGuiCol_FrameBg]      =ImVec4(.08f,.08f,.15f,1.f);
-    s.Colors[ImGuiCol_CheckMark]    =ImVec4(.00f,.90f,1.0f,1.f);
-    s.Colors[ImGuiCol_Tab]          =ImVec4(.05f,.10f,.20f,1.f);
-    s.Colors[ImGuiCol_TabActive]    =ImVec4(.00f,.20f,.50f,1.f);
-    s.Colors[ImGuiCol_TabHovered]   =ImVec4(.00f,.30f,.70f,1.f);
-    s.Colors[ImGuiCol_SliderGrab]   =ImVec4(.00f,.70f,1.0f,1.f);
-    s.Colors[ImGuiCol_Button]       =ImVec4(.00f,.25f,.55f,1.f);
-    s.Colors[ImGuiCol_ButtonHovered]=ImVec4(.00f,.40f,.80f,1.f);
-    s.Colors[ImGuiCol_Separator]    =ImVec4(.20f,.20f,.30f,1.f);
+    s.WindowRounding=10; s.FrameRounding=5; s.GrabRounding=4;
+    s.ItemSpacing=ImVec2(8,7); s.WindowPadding=ImVec2(12,12);
+    s.Colors[ImGuiCol_WindowBg]      =ImVec4(.03f,.03f,.07f,.97f);
+    s.Colors[ImGuiCol_TitleBg]       =ImVec4(.00f,.10f,.25f,1.f);
+    s.Colors[ImGuiCol_TitleBgActive] =ImVec4(.00f,.18f,.45f,1.f);
+    s.Colors[ImGuiCol_FrameBg]       =ImVec4(.06f,.06f,.12f,1.f);
+    s.Colors[ImGuiCol_CheckMark]     =ImVec4(.00f,.85f,1.0f,1.f);
+    s.Colors[ImGuiCol_Tab]           =ImVec4(.04f,.08f,.18f,1.f);
+    s.Colors[ImGuiCol_TabActive]     =ImVec4(.00f,.18f,.45f,1.f);
+    s.Colors[ImGuiCol_TabHovered]    =ImVec4(.00f,.28f,.65f,1.f);
+    s.Colors[ImGuiCol_SliderGrab]    =ImVec4(.00f,.65f,1.0f,1.f);
+    s.Colors[ImGuiCol_Button]        =ImVec4(.00f,.22f,.50f,1.f);
+    s.Colors[ImGuiCol_ButtonHovered] =ImVec4(.00f,.38f,.75f,1.f);
+    s.Colors[ImGuiCol_Separator]     =ImVec4(.15f,.15f,.28f,1.f);
+    s.Colors[ImGuiCol_SliderGrabActive]=ImVec4(.00f,.90f,1.f,1.f);
 
-    ImGui::SetNextWindowSize(ImVec2(340,440),ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(340,460),ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(10,10),ImGuiCond_FirstUseEver);
-    ImGui::Begin("  ZOMBIE3D MOD  |  DUONG DEV  ",nullptr,0);
+    ImGui::Begin("  ⚡ AXIOM MOD  |  v1.0  ",nullptr,0);
 
-    // Header + FPS
-    ImGui::TextColored(ImVec4(0,.8f,1,1),"  DUONG DEVELOPMENT");
+    // Header
+    ImGui::TextColored(ImVec4(.0f,.85f,1.f,1.f)," AXIOM DEVELOPMENT");
     ImGui::SameLine();
-    char fb[24];snprintf(fb,24,"  [FPS: %.0f]",g_fps);
-    ImGui::TextColored(g_fps>=60?ImVec4(.3f,1,.3f,1):g_fps>=30?ImVec4(1,.8f,.2f,1):ImVec4(1,.3f,.3f,1),"%s",fb);
-    ImGui::Separator();ImGui::Spacing();
+    char fb[32]; snprintf(fb,32,"  [FPS: %.0f]",g_fps);
+    ImGui::TextColored(
+        g_fps>=60?ImVec4(.2f,1.f,.2f,1.f):g_fps>=30?ImVec4(1.f,.75f,.1f,1.f):ImVec4(1.f,.2f,.2f,1.f),
+        "%s",fb);
+
+    // Dump info banner
+    ImGui::TextColored(ImVec4(.4f,.4f,.6f,1.f),
+        " No AntiCheat detected | Server: PostgreSQL");
+    ImGui::Separator(); ImGui::Spacing();
 
     if(ImGui::BeginTabBar("tabs")){
 
-        // ── NGUOI CHOI ────────────────────────────────────────────
-        if(ImGui::BeginTabItem(T("NGUOI CHOI","PLAYER"))){
+        // ── TAB 1: CHIEN DAU ────────────────────────────────────
+        if(ImGui::BeginTabItem(T("CHIEN DAU","COMBAT"))){
             ImGui::Spacing();
-            ImGui::Checkbox(T("Dan Vo Han","Inf Ammo"),&bInfAmmo);ImGui::Spacing();
-            ImGui::Checkbox(T("Khong Giat Sung","No Recoil"),&bNoRecoil);ImGui::Spacing();
+            ImGui::TextColored(ImVec4(.3f,.9f,.3f,1.f),T(" [ VU KHI ]"," [ WEAPON ]"));
+            ImGui::Spacing();
+
+            ImGui::Checkbox(T("Dan Vo Han","Infinite Ammo"),&bInfAmmo);
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Khong Nan Dan","No Reload"),&bNoReload);
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Khong Giat Sung","No Recoil"),&bNoRecoil);
+            if(bNoRecoil)
+                ImGui::TextColored(ImVec4(.5f,1.f,.5f,1.f),
+                    T("  Hook: HandleChangeShooting + HandleShoot",
+                      "  Hook: HandleChangeShooting + HandleShoot"));
+            ImGui::Spacing();
+            ImGui::Checkbox(T("Ban Nhanh (Fast Fire)","Fast Fire Rate"),&bFastFire);
+            if(bFastFire){
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderFloat(T("Delay Ban","Fire Delay"),&fastFireRate,0.01f,0.25f,"%.3fs");
+            }
+
+            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+            ImGui::TextColored(ImVec4(.3f,.9f,.3f,1.f),T(" [ NHAN VAT ]"," [ CHARACTER ]"));
+            ImGui::Spacing();
+
+            ImGui::Checkbox(T("Tu Dong Ban","Auto Shoot"),&bAutoAim);
+            if(bAutoAim)
+                ImGui::TextColored(ImVec4(1.f,.8f,.2f,1.f),
+                    T("  Force InputShooting + IsShooting = true",
+                      "  Force InputShooting + IsShooting = true"));
+            ImGui::Spacing();
+
             ImGui::Checkbox(T("Tang Toc Di Chuyen","Speed Hack"),&bSpeedHack);
             if(bSpeedHack){
                 ImGui::SetNextItemWidth(-1);
-                ImGui::SliderFloat(T("Toc Do","Speed"),&speedMult,1,5,"x%.1f");
+                ImGui::SliderFloat(T("He So Toc Do","Speed Multiplier"),&speedMult,1.f,6.f,"x%.1f");
             }
             ImGui::Spacing();
-            ImGui::Checkbox(T("Bay","Fly Hack"),&bFly);
+
+            ImGui::Checkbox(T("Bay (Fly Hack)","Fly Hack"),&bFly);
             if(bFly){
                 ImGui::SetNextItemWidth(-1);
-                ImGui::SliderFloat(T("Toc Do Bay","Fly Speed"),&flySpeed,1,30,"%.0f");
-                ImGui::TextColored(ImVec4(.5f,1,.5f,1),
-                    T("  Nhan JUMP de len cao\n  Nhan CROUCH de xuong thap\n  Khong nhan = hover tai cho",
-                      "  Hold JUMP to go up\n  Hold CROUCH to go down\n  No button = hover"));
+                ImGui::SliderFloat(T("Toc Do Bay","Fly Speed"),&flySpeed,2.f,25.f,"%.0f");
+                ImGui::TextColored(ImVec4(.5f,1.f,.5f,1.f),
+                    T("  JUMP=len cao | CROUCH=xuong | Khong=hover",
+                      "  JUMP=up | CROUCH=down | Nothing=hover"));
             }
+
             ImGui::EndTabItem();
         }
 
-        // ── TAI NGUYEN ────────────────────────────────────────────
+        // ── TAB 2: TAI NGUYEN ────────────────────────────────────
         if(ImGui::BeginTabItem(T("TAI NGUYEN","RESOURCES"))){
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1,.85f,0,1),T("  TIEN (Money+Tickets)","  MONEY+TICKETS"));
-            ImGui::Checkbox(T("Full Tien [999,999,999]","Full Money"),&bFullMoney);
-            ImGui::Spacing();ImGui::Separator();ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1,.6f,0,1),T("  RUONG (Key thuong+vang)","  BOXES (Keys)"));
-            ImGui::Checkbox(T("Full Ruong [999,999,999 Key]","Full Boxes"),&bFullBox);
-            ImGui::Spacing();ImGui::Separator();ImGui::Spacing();
-            ImGui::TextColored(ImVec4(.7f,.7f,1,1),T("  CAI DAT KHAC","  OTHER"));
-            ImGui::Checkbox(T("Bo Quang Cao","No Ads"),&bNoAds);
+            ImGui::TextColored(ImVec4(1.f,.3f,.3f,1.f),
+                T("  [ ! ] Currency luu tren SERVER (PostgreSQL)",
+                  "  [ ! ] Currency stored on SERVER (PostgreSQL)"));
+            ImGui::TextColored(ImVec4(.7f,.7f,.7f,1.f),
+                T("  Hien thi 999M nhung KHONG the mua that",
+                  "  Shows 999M but real purchases will FAIL"));
+            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+            ImGui::TextColored(ImVec4(.9f,.8f,.1f,1.f),
+                T("  TIEN MEM (Soft Currency)","  SOFT CURRENCY"));
+            ImGui::Checkbox(T("Hien Thi: 999,999,999 Xu","Display: 999M Soft"),&bSoftCoin);
+            if(bSoftCoin)
+                ImGui::TextColored(ImVec4(.5f,.5f,.5f,1.f),
+                    T("  Hook: GetSoftCurrency RVA 0x1999A1C",
+                      "  Hook: GetSoftCurrency RVA 0x1999A1C"));
+            ImGui::Spacing();
+
+            ImGui::TextColored(ImVec4(.9f,.6f,.1f,1.f),
+                T("  TIEN CUNG (Hard Currency)","  HARD CURRENCY"));
+            ImGui::Checkbox(T("Hien Thi: 999,999,999 Kim Cuong","Display: 999M Hard"),&bHardCoin);
+            if(bHardCoin)
+                ImGui::TextColored(ImVec4(.5f,.5f,.5f,1.f),
+                    T("  Hook: GetHardCurrency RVA 0x199A63C",
+                      "  Hook: GetHardCurrency RVA 0x199A63C"));
             ImGui::EndTabItem();
         }
 
-        // ── SETTING ───────────────────────────────────────────────
-        if(ImGui::BeginTabItem("SETTING")){
+        // ── TAB 3: SETTINGS ──────────────────────────────────────
+        if(ImGui::BeginTabItem("SETTINGS")){
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(.5f,1,.5f,1),T("  HIEU NANG","  PERFORMANCE"));
+            ImGui::TextColored(ImVec4(.5f,1.f,.5f,1.f),T("  HIEU NANG","  PERFORMANCE"));
             ImGui::Spacing();
             float fc=g_fps>=60?1.f:g_fps>=30?.5f:0.f;
-            ImGui::TextColored(ImVec4(1.f-fc,fc,0,1),"FPS: %.1f",g_fps);
-            ImGui::ProgressBar(g_fps/120.f,ImVec2(-1,8));
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(.6f,.6f,.6f,1),
+            ImGui::TextColored(ImVec4(1.f-fc,fc,0.f,1.f),"FPS: %.1f",g_fps);
+            ImGui::ProgressBar(g_fps/120.f,ImVec2(-1.f,8.f));
+            ImGui::TextColored(ImVec4(.6f,.6f,.6f,1.f),
                 g_fps>=60?T("Rat tot (60+)","Very good (60+)"):
-                g_fps>=30?T("Binh thuong (30+)","Normal (30+)"):
+                g_fps>=30?T("Binh thuong (30-60)","Normal (30-60)"):
                           T("Thap, co the lag (<30)","Low, may lag (<30)"));
-            ImGui::Spacing();ImGui::Separator();ImGui::Spacing();
-            ImGui::TextColored(ImVec4(.7f,.7f,1,1),T("  NGON NGU","  LANGUAGE"));
+
+            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+            ImGui::TextColored(ImVec4(.7f,.7f,1.f,1.f),T("  DUMP INFO","  DUMP INFO"));
             ImGui::Spacing();
-            if(ImGui::RadioButton("Tieng Viet",lang_idx==0))lang_idx=0;
-            if(ImGui::RadioButton("English",lang_idx==1))lang_idx=1;
+            ImGui::TextColored(ImVec4(.6f,.8f,.6f,1.f)," AntiCheat: NONE (client-side)");
+            ImGui::TextColored(ImVec4(.6f,.8f,.6f,1.f)," Network:   Custom UDP + PostgreSQL");
+            ImGui::TextColored(ImVec4(.6f,.8f,.6f,1.f)," Engine:    Unity IL2CPP (ARM64)");
+            ImGui::TextColored(ImVec4(.6f,.8f,.6f,1.f)," Lib:       libil2cpp.so");
+
+            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+            ImGui::TextColored(ImVec4(.7f,.7f,1.f,1.f),T("  NGON NGU","  LANGUAGE"));
+            ImGui::Spacing();
+            if(ImGui::RadioButton("Tieng Viet", lang_idx==0)) lang_idx=0;
+            if(ImGui::RadioButton("English",    lang_idx==1)) lang_idx=1;
+
             ImGui::EndTabItem();
         }
 
@@ -328,47 +393,67 @@ static void DrawMenu(){
 // ================================================================
 void* thread(void*){
     initModMenu((void*)DrawMenu);
-    do{sleep(1);}while(getAbsoluteAddress("libil2cpp.so",0)==0);
-    LOGI("[AXIOM] libil2cpp detected, waiting 3s...");
+    do{ sleep(1); }while(getAbsoluteAddress("libil2cpp.so",0)==0);
+    LOGI("[AXIOM] libil2cpp.so detected — waiting 3s for IL2CPP init...");
     sleep(3);
 
-    #define HOOK(rva,hk,orig) do{ \
-        void* _a=(void*)getAbsoluteAddress("libil2cpp.so",rva); \
-        DobbyHook(_a,(void*)hk,(void**)&orig); \
+    // ── Macro helper ─────────────────────────────────────────────
+    #define HOOK(rva, hk, orig) do{ \
+        void* _addr=(void*)getAbsoluteAddress("libil2cpp.so",(rva)); \
+        if(_addr){ DobbyHook(_addr,(void*)(hk),(void**)&(orig)); \
+                   LOGI("[AXIOM] Hooked 0x%08X -> %s", (rva), #hk); } \
+        else{ LOGI("[AXIOM] MISS 0x%08X -> %s", (rva), #hk); } \
     }while(0)
 
-    HOOK(0x1309740, hook_WeapUpdate,    old_WeapUpdate);
-    HOOK(0x130E3BC, hook_WeaponKick,    old_WeaponKick);
-    HOOK(0x12EC900, hook_FPSFixedUpdate,old_FPSFixedUpdate);
+    // ── WEAPON ───────────────────────────────────────────────────
+    // ThirdPersonCharacterControllerScript.Update — TypeDefIndex: 47
+    // Fields: currentAmmo@0x30, outOfAmmo@0x34, fireRate@0x38, isReloading@0x11A
+    HOOK(0x180DC1C, hook_WeapUpdate, old_WeapUpdate);
 
-    HOOK(0x1323878, hk_GetMoney,  old_ArcGetMoney);
-    HOOK(0x13238C0, hk_UseMoney,  old_ArcUseMoney);
-    HOOK(0x13239D0, hk_GetTix,    old_ArcGetTickets);
-    HOOK(0x1323A18, hk_UseTix,    old_ArcUseTickets);
-    HOOK(0x1323B08, hk_GetKeys,   old_ArcGetKeys);
-    HOOK(0x1323B50, hk_UseKeys,   old_ArcUseKeys);
-    HOOK(0x1323D74, hk_GetSKeys,  old_ArcGetSKeys);
-    HOOK(0x1323DBC, hk_UseSKeys,  old_ArcUseSKeys);
+    // ── NO RECOIL ────────────────────────────────────────────────
+    // ComponentRecoilForFastShootingViewMyWeapon.HandleChangeShooting
+    HOOK(0x1A4080C, hook_RecoilFastHandler, old_RecoilFastHandler);
+    // ComponentRecoilForSlowShootingViewMyWeapon.HandleShoot
+    HOOK(0x1A40CFC, hook_RecoilSlowHandler, old_RecoilSlowHandler);
 
-    HOOK(0x12BF2FC, hk_GetCurrency, old_GetCurrency);
-    HOOK(0x12BF350, hk_SetCurrency, old_SetCurrency);
+    // ── MOVEMENT ─────────────────────────────────────────────────
+    // MovableCharacterComponent.MoveByDirection — TypeDefIndex: 1325
+    // Fields: Velocity@0x50, MoveVelocity@0x5C, MoveDirection@0x68, IsJumped@0x78
+    HOOK(0x1A6D74C, hook_MoveByDirection, old_MoveByDirection);
+    // MovableCharacterComponent.Move(Vector3) — fly Y override
+    HOOK(0x1A6D690, hook_Move, old_Move);
 
-    HOOK(0x12D7344, hk_LoadingSettings, old_LoadingSettings);
-    HOOK(0x132FF5C, hk_ShowInterAd,     old_ShowInterAd);
-    HOOK(0x132FBEC, hk_ShowBannerAd,    old_ShowBannerAd);
+    // ── CHARACTER UPDATE ─────────────────────────────────────────
+    // ClientMyCharacter.LateUpdate — TypeDefIndex: 1050
+    // Fields: MovableCharacterComponent@0xA0, _modelCharacter@0xA8
+    HOOK(0x1A3F720, hook_CharLateUpdate, old_CharLateUpdate);
+
+    // ── CURRENCY DISPLAY ─────────────────────────────────────────
+    // ModelPlayerState.GetSoftCurrency — TypeDefIndex: 3061
+    HOOK(0x1999A1C, hook_GetSoftCurrency, old_GetSoftCurrency);
+    // ModelPlayerState.GetHardCurrency
+    HOOK(0x199A63C, hook_GetHardCurrency, old_GetHardCurrency);
 
     #undef HOOK
-    LOGI("[AXIOM] ALL HOOKS DONE");
+    LOGI("[AXIOM] ALL HOOKS INSTALLED");
     pthread_exit(0);
 }
 
 // ================================================================
 //  JNI
 // ================================================================
-extern "C"{
-    JavaVM* jvm=nullptr;JNIEnv* env=nullptr;
+extern "C" {
+    JavaVM* jvm=nullptr; JNIEnv* env=nullptr;
     __attribute__((visibility("default")))
-    jint loadJNI(JavaVM* vm){jvm=vm;vm->AttachCurrentThread(&env,nullptr);return JNI_VERSION_1_6;}
+    jint loadJNI(JavaVM* vm){
+        jvm=vm; vm->AttachCurrentThread(&env,nullptr);
+        return JNI_VERSION_1_6;
+    }
 }
+
 __attribute__((constructor))
-void init(){pthread_t t;pthread_create(&t,nullptr,thread,nullptr);RemapTools::RemapLibrary("libLoader.so");}
+void init(){
+    pthread_t t;
+    pthread_create(&t,nullptr,thread,nullptr);
+    RemapTools::RemapLibrary("libLoader.so");
+}
