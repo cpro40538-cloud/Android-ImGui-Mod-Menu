@@ -48,7 +48,7 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     }
 
     LOGI("Found native library directory: %s", native.c_str());
-    std::string path = native + "libModMenu.so";
+    std::string path = native + "libDuongDev.so";
 
     // Open the library containing the actual code
     void *open = dlopen(path.c_str(), RTLD_NOW);
@@ -67,7 +67,7 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     auto loadJNI = (jint (*)(JavaVM *vm)) jni_load;
     jint jni = loadJNI(vm); // Call function in main library
 
-    RemapTools::RemapLibrary("libModMenu.so");
+    RemapTools::RemapLibrary("libDuongDev.so");
 
     return jni;
 }
